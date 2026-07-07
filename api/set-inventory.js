@@ -12,6 +12,15 @@ function limpiarDominio(shop) {
     .replace(/\/+$/, "");
 }
 
+async function parseJsonOrThrow(response, etiqueta) {
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    throw new Error(`${etiqueta}: HTTP ${response.status} desde ${response.url} — respuesta no es JSON: ${text.slice(0, 200)}`);
+  }
+}
+
 async function getAccessToken(shop, clientId, clientSecret) {
   if (cachedToken && Date.now() < cachedTokenExpiresAt) {
     return cachedToken;
@@ -25,7 +34,7 @@ async function getAccessToken(shop, clientId, clientSecret) {
       client_secret: clientSecret,
     }),
   });
-  const data = await response.json();
+  const data = await parseJsonOrThrow(response, "token");
   if (!data.access_token) {
     const detalle = data.error_description || data.error || `HTTP ${response.status}`;
     throw new Error(`No se pudo obtener un token de Shopify (${detalle}).`);
@@ -74,7 +83,7 @@ export default async function handler(req, res) {
         variables: { id: variantId },
       }),
     });
-    const variantData = await variantResponse.json();
+    const variantData = await parseJsonOrThrow(variantResponse, "variante");
     const inventoryItemId = variantData?.data?.productVariant?.inventoryItem?.id;
     if (!inventoryItemId) {
       res.status(200).json({ ok: false, error: "No se encontró el inventory item para esa variante en Shopify." });
@@ -104,7 +113,7 @@ export default async function handler(req, res) {
         },
       }),
     });
-    const data = await response.json();
+    const data = await parseJsonOrThrow(response, "mutacion");
     const errors = data?.data?.inventorySetQuantities?.userErrors;
     if (errors && errors.length > 0) {
       res.status(200).json({ ok: false, error: errors.map((e) => e.message).join(", ") });
