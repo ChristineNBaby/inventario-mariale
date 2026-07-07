@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Plus, Package, Receipt, Search, X, Camera, TrendingDown, DollarSign, RefreshCw, CreditCard, Banknote, Landmark, Calendar, Link2, ListChecks } from "lucide-react";
 
 // ---------- Paleta Dr. Mariale Rivers ----------
@@ -141,6 +141,23 @@ export default function App() {
   const [shopifySynced, setShopifySynced] = useState(false);
   const [confirmacionStock, setConfirmacionStock] = useState(null);
   const [showResumen, setShowResumen] = useState(false);
+  const [cargandoProductos, setCargandoProductos] = useState(true);
+
+  // Al abrir la app, trae el catálogo real y actualizado desde Shopify.
+  // Si falla (sin conexión, Shopify no configurado, etc.), se queda con los
+  // productos de prueba para que la app siga siendo utilizable.
+  useEffect(() => {
+    fetch("/api/get-products")
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.ok && data.productos?.length > 0) {
+          setProducts(data.productos);
+          setShopifySynced(true);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setCargandoProductos(false));
+  }, []);
 
   const filtered = products.filter((p) => p.nombre.toLowerCase().includes(query.toLowerCase()));
 
@@ -265,7 +282,8 @@ export default function App() {
               </button>
             </div>
             <div className="space-y-3">
-              {filtered.length === 0 && <p className="text-sm text-[#8A8368] text-center py-8">No hay nada que coincida.</p>}
+              {cargandoProductos && <p className="text-sm text-[#8A8368] text-center py-8">Cargando productos de Shopify...</p>}
+              {!cargandoProductos && filtered.length === 0 && <p className="text-sm text-[#8A8368] text-center py-8">No hay nada que coincida.</p>}
               {filtered.map((p) => <ProductCard key={p.id} p={p} onSell={setSellTarget} onEdit={setEditTarget} />)}
             </div>
           </>
