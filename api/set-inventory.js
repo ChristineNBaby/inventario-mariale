@@ -51,14 +51,36 @@ export default async function handler(req, res) {
 
   const shop = limpiarDominio(process.env.SHOPIFY_STORE_DOMAIN);
 
-  const { inventoryItemId, locationId, quantity } = req.body || {};
-  if (!inventoryItemId || !locationId || quantity == null) {
+  const { inventoryItemId: variantId, locationId, quantity } = req.body || {};
+  if (!variantId || !locationId || quantity == null) {
     res.status(400).json({ ok: false, error: "Faltan datos: inventoryItemId, locationId o quantity." });
     return;
   }
 
   try {
     const token = await getAccessToken(shop, clientId, clientSecret);
+
+    // El código de la app manda el ID de la VARIANTE del producto, pero Shopify necesita
+    // el ID del "inventory item" asociado para poder descontar stock — son GIDs distintos,
+    // así que lo resolvemos aquí antes de la mutación.
+    const variantResponse = await fetch(`https://${shop}/admin/api/2024-10/graphql.json`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": token,
+      },
+      body: JSON.stringify({
+        query: `query($id: ID!) { productVariant(id: $id) { inventoryItem { id } } }`,
+        variables: { id: variantId },
+      }),
+    });
+    const variantData = await variantResponse.json();
+    const inventoryItemId = variantData?.data?.productVariant?.inventoryItem?.id;
+    if (!inventoryItemId) {
+      res.status(200).json({ ok: false, error: "No se encontró el inventory item para esa variante en Shopify." });
+      return;
+    }
+
     const response = await fetch(`https://${shop}/admin/api/2024-10/graphql.json`, {
       method: "POST",
       headers: {
