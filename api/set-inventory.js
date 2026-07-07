@@ -5,6 +5,13 @@
 let cachedToken = null;
 let cachedTokenExpiresAt = 0;
 
+function limpiarDominio(shop) {
+  return shop
+    .trim()
+    .replace(/^https?:\/\//i, "")
+    .replace(/\/+$/, "");
+}
+
 async function getAccessToken(shop, clientId, clientSecret) {
   if (cachedToken && Date.now() < cachedTokenExpiresAt) {
     return cachedToken;
@@ -20,7 +27,8 @@ async function getAccessToken(shop, clientId, clientSecret) {
   });
   const data = await response.json();
   if (!data.access_token) {
-    throw new Error(data.error_description || "No se pudo obtener un token de Shopify.");
+    const detalle = data.error_description || data.error || `HTTP ${response.status}`;
+    throw new Error(`No se pudo obtener un token de Shopify (${detalle}).`);
   }
   cachedToken = data.access_token;
   cachedTokenExpiresAt = Date.now() + (data.expires_in - 60) * 1000;
@@ -33,14 +41,15 @@ export default async function handler(req, res) {
     return;
   }
 
-  const shop = process.env.SHOPIFY_STORE_DOMAIN;
   const clientId = process.env.SHOPIFY_CLIENT_ID;
   const clientSecret = process.env.SHOPIFY_CLIENT_SECRET;
 
-  if (!shop || !clientId || !clientSecret) {
+  if (!process.env.SHOPIFY_STORE_DOMAIN || !clientId || !clientSecret) {
     res.status(500).json({ ok: false, error: "Shopify no está configurado todavía (faltan variables de entorno en el servidor)." });
     return;
   }
+
+  const shop = limpiarDominio(process.env.SHOPIFY_STORE_DOMAIN);
 
   const { inventoryItemId, locationId, quantity } = req.body || {};
   if (!inventoryItemId || !locationId || quantity == null) {
