@@ -36,57 +36,29 @@ const metodosPago = [
 // el mismo lugar de donde también descuentan las ventas en línea.
 const SHOPIFY_LOCATION_ID = "gid://shopify/Location/79362425046"; // Clínica
 
-// La llave de acceso a Shopify NUNCA va escrita aquí. Se lee de una variable de entorno
-// configurada en el hosting (Vercel/Netlify), así el código se puede compartir sin riesgo.
-const SHOPIFY_STORE_DOMAIN = import.meta.env?.VITE_SHOPIFY_STORE_DOMAIN || "";
-const SHOPIFY_ACCESS_TOKEN = import.meta.env?.VITE_SHOPIFY_ACCESS_TOKEN || "";
+// La llave de acceso a Shopify ya no vive aquí ni en ninguna variable VITE_ (esas
+// terminan expuestas en el navegador). Vive solo en el servidor, dentro de /api/set-inventory,
+// y este código le pide a esa función que haga el trabajo por nosotros.
 
-// Descuenta el stock de un producto directamente en Shopify, en la ubicación "Clínica".
-// Devuelve { ok: true } si funcionó, o { ok: false, error } si algo falló —
-// la venta en la app se guarda de todos modos, para nunca perder el registro.
+// Descuenta el stock de un producto en Shopify, en la ubicación "Clínica", a través
+// de la función de servidor /api/set-inventory. Devuelve { ok: true } si funcionó, o
+// { ok: false, error } si algo falló — la venta en la app se guarda de todos modos,
+// para nunca perder el registro.
 async function descontarStockEnShopify(inventoryItemId, cantidadVendida, stockActualEnShopify) {
-  if (!SHOPIFY_STORE_DOMAIN || !SHOPIFY_ACCESS_TOKEN) {
-    return { ok: false, error: "Shopify no está configurado todavía (faltan credenciales)." };
-  }
   try {
     const nuevaCantidad = Math.max(0, stockActualEnShopify - cantidadVendida);
-    const response = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/2024-10/graphql.json`, {
+    const response = await fetch("/api/set-inventory", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        query: `
-          mutation inventorySetQuantities($input: InventorySetQuantitiesInput!) {
-            inventorySetQuantities(input: $input) {
-              userErrors { field message }
-            }
-          }
-        `,
-        variables: {
-          input: {
-            reason: "correction",
-            name: "available",
-            quantities: [
-              {
-                inventoryItemId,
-                locationId: SHOPIFY_LOCATION_ID,
-                quantity: nuevaCantidad,
-              },
-            ],
-          },
-        },
+        inventoryItemId,
+        locationId: SHOPIFY_LOCATION_ID,
+        quantity: nuevaCantidad,
       }),
     });
-    const data = await response.json();
-    const errors = data?.data?.inventorySetQuantities?.userErrors;
-    if (errors && errors.length > 0) {
-      return { ok: false, error: errors.map((e) => e.message).join(", ") };
-    }
-    return { ok: true };
+    return await response.json();
   } catch (err) {
-    return { ok: false, error: "No se pudo conectar con Shopify. Se guardó la venta localmente." };
+    return { ok: false, error: "No se pudo conectar con el servidor. Se guardó la venta localmente." };
   }
 }
 

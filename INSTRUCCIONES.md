@@ -23,18 +23,28 @@
 
 ## Paso 3 — Agrega tus llaves secretas de Shopify
 
-**Antes de esto, necesitas generar un Admin API access token:**
-1. En tu panel de Shopify: Configuración → Apps y canales de venta → Desarrollar apps
-2. Crea una app nueva (ej: "App Inventario Clínica")
-3. En "Configuración de API", dale permiso de **lectura y escritura de Inventario** (`read_inventory`, `write_inventory`)
-4. Instala la app y copia el "Admin API access token" (empieza con `shpat_...`) — solo se muestra una vez, guárdalo bien
+Desde 2026, Shopify ya no entrega un token fijo directamente en su panel para apps nuevas —
+hay que crear la app en el **Dev Dashboard** y autorizarla una vez. El proyecto ya trae
+listas las funciones de servidor que hacen esto de forma segura (carpeta `/api`).
 
-**Ya con el token en mano, en Vercel:**
-1. Ve a tu proyecto → Settings → Environment Variables
-2. Agrega estas dos:
-   - `VITE_SHOPIFY_STORE_DOMAIN` = `drmarialerivers.myshopify.com`
-   - `VITE_SHOPIFY_ACCESS_TOKEN` = (el token que copiaste, empieza con shpat_)
-3. Dale "Redeploy" al proyecto para que tome las variables nuevas
+**1. Crea la app en el Dev Dashboard:**
+1. Ve a [dev.shopify.com/dashboard](https://dev.shopify.com/dashboard)
+2. Crea una app nueva (ej: "App Inventario Clínica")
+3. En la versión de la app, agrega los scopes `read_inventory` y `write_inventory`, y publica una versión
+4. En Settings, copia el **Client ID** y el **Client secret**
+
+**2. En Vercel, agrega estas variables (Settings → Environment Variables):**
+   - `SHOPIFY_STORE_DOMAIN` = `drmarialerivers.myshopify.com`
+   - `SHOPIFY_CLIENT_ID` = (el Client ID que copiaste)
+   - `SHOPIFY_CLIENT_SECRET` = (el Client secret que copiaste)
+   - Dale "Deploy" / "Redeploy" para que tome las variables nuevas
+
+**3. Autoriza la app una sola vez:**
+1. Visita `https://tu-proyecto.vercel.app/api/shopify-auth-start`
+2. Inicia sesión y aprueba el acceso en la pantalla de Shopify
+3. Te va a mostrar una página con el token — cópialo
+4. Vuelve a Vercel y agrega una variable más: `SHOPIFY_ACCESS_TOKEN` = (el token que copiaste)
+5. Dale "Redeploy" una última vez
 
 ## Paso 4 — Abre el enlace en tu celular/iPad
 
