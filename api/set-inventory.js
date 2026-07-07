@@ -112,6 +112,7 @@ export default async function handler(req, res) {
           input: {
             reason: "correction",
             name: "available",
+            ignoreCompareQuantity: true,
             quantities: [{ inventoryItemId, locationId, quantity }],
           },
         },
