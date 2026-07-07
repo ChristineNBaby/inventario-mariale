@@ -24,27 +24,26 @@
 ## Paso 3 — Agrega tus llaves secretas de Shopify
 
 Desde 2026, Shopify ya no entrega un token fijo directamente en su panel para apps nuevas —
-hay que crear la app en el **Dev Dashboard** y autorizarla una vez. El proyecto ya trae
-listas las funciones de servidor que hacen esto de forma segura (carpeta `/api`).
+hay que crear la app en el **Dev Dashboard**. El proyecto ya trae lista la función de
+servidor que se encarga de hablar con Shopify de forma segura (carpeta `/api`), sin
+ningún paso extra de autorización en el navegador.
 
 **1. Crea la app en el Dev Dashboard:**
 1. Ve a [dev.shopify.com/dashboard](https://dev.shopify.com/dashboard)
 2. Crea una app nueva (ej: "App Inventario Clínica")
 3. En la versión de la app, agrega los scopes `read_inventory` y `write_inventory`, y publica una versión
-4. En Settings, copia el **Client ID** y el **Client secret**
+4. Instala la app en tu tienda
+5. En Settings, copia el **Client ID** y el **Client secret**
 
 **2. En Vercel, agrega estas variables (Settings → Environment Variables):**
    - `SHOPIFY_STORE_DOMAIN` = `drmarialerivers.myshopify.com`
    - `SHOPIFY_CLIENT_ID` = (el Client ID que copiaste)
    - `SHOPIFY_CLIENT_SECRET` = (el Client secret que copiaste)
-   - Dale "Deploy" / "Redeploy" para que tome las variables nuevas
+   - Dale "Deploy" / "Redeploy" para que tome las variables nuevas — listo, no hace falta nada más.
 
-**3. Autoriza la app una sola vez:**
-1. Visita `https://tu-proyecto.vercel.app/api/shopify-auth-start`
-2. Inicia sesión y aprueba el acceso en la pantalla de Shopify
-3. Te va a mostrar una página con el token — cópialo
-4. Vuelve a Vercel y agrega una variable más: `SHOPIFY_ACCESS_TOKEN` = (el token que copiaste)
-5. Dale "Redeploy" una última vez
+Nota: si al probar una venta ves el error "shop_not_permitted", significa que la app y la
+tienda no están en la misma organización de Shopify. En ese caso avísame y usamos el método
+alternativo (autorización manual una sola vez).
 
 ## Paso 4 — Abre el enlace en tu celular/iPad
 
