@@ -1,0 +1,13 @@
+/** @type {import('tailwindcss').Config} */
+export default {
+  content: ["./index.html", "./src/**/*.{js,jsx}"],
+  theme: {
+    extend: {
+      fontFamily: {
+        serif: ["Georgia", "serif"],
+        sans: ["-apple-system", "BlinkMacSystemFont", "Segoe UI", "sans-serif"],
+      },
+    },
+  },
+  plugins: [],
+};
