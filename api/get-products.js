@@ -68,7 +68,7 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         query: `
           query {
-            products(first: 250, sortKey: TITLE) {
+            products(first: 250, sortKey: TITLE, query: "status:active") {
               edges {
                 node {
                   id
@@ -80,6 +80,7 @@ export default async function handler(req, res) {
                         id
                         price
                         inventoryItem {
+                          tracked
                           inventoryLevel(locationId: "${SHOPIFY_LOCATION_ID}") {
                             quantities(names: ["available"]) { quantity }
                           }
@@ -100,21 +101,23 @@ export default async function handler(req, res) {
       return;
     }
 
-    const productos = (data?.data?.products?.edges || []).map(({ node }, i) => {
-      const variant = node.variants.edges[0]?.node;
-      const cantidad = variant?.inventoryItem?.inventoryLevel?.quantities?.[0]?.quantity ?? 0;
-      return {
-        id: i + 1,
-        shopifyProductId: node.id,
-        shopifyVariantId: variant?.id || null,
-        nombre: node.title,
-        tipo: "producto",
-        precio: Math.round(parseFloat(variant?.price || "0")),
-        metodoPago: "Efectivo",
-        stock: cantidad,
-        foto: node.featuredImage?.url || null,
-      };
-    });
+    const productos = (data?.data?.products?.edges || [])
+      .filter(({ node }) => node.variants.edges[0]?.node?.inventoryItem?.tracked)
+      .map(({ node }, i) => {
+        const variant = node.variants.edges[0]?.node;
+        const cantidad = variant?.inventoryItem?.inventoryLevel?.quantities?.[0]?.quantity ?? 0;
+        return {
+          id: i + 1,
+          shopifyProductId: node.id,
+          shopifyVariantId: variant?.id || null,
+          nombre: node.title,
+          tipo: "producto",
+          precio: Math.round(parseFloat(variant?.price || "0")),
+          metodoPago: "Efectivo",
+          stock: cantidad,
+          foto: node.featuredImage?.url || null,
+        };
+      });
 
     res.status(200).json({ ok: true, productos });
   } catch (err) {
