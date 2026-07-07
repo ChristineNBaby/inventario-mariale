@@ -84,9 +84,13 @@ export default async function handler(req, res) {
       }),
     });
     const variantData = await parseJsonOrThrow(variantResponse, "variante");
+    if (variantData.errors) {
+      res.status(200).json({ ok: false, error: "Error de Shopify (variante): " + JSON.stringify(variantData.errors) });
+      return;
+    }
     const inventoryItemId = variantData?.data?.productVariant?.inventoryItem?.id;
     if (!inventoryItemId) {
-      res.status(200).json({ ok: false, error: "No se encontró el inventory item para esa variante en Shopify." });
+      res.status(200).json({ ok: false, error: "No se encontró el inventory item. Respuesta: " + JSON.stringify(variantData) });
       return;
     }
 
