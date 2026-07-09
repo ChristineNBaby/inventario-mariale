@@ -52,6 +52,19 @@ alternativo (autorización manual una sola vez).
 3. Elige "Agregar a pantalla de inicio"
 4. Listo — queda como un ícono más, se abre igual que una app
 
+## Pestaña "Pedidos" (reabastecimiento)
+
+La lista de pedidos compartida se guarda EN SHOPIFY (metafields de producto), así
+todo el equipo ve lo mismo desde cualquier celular. Para que funcione, la app del
+Dev Dashboard necesita un scope adicional:
+
+1. Ve a [dev.shopify.com/dashboard](https://dev.shopify.com/dashboard) → tu app → versiones
+2. Agrega el scope `write_products` (junto a los que ya tiene: `read_products`, `read_inventory`, `write_inventory`)
+3. Publica la nueva versión — listo
+
+Sin ese scope, la app igual funciona para ver stock, vender y RECIBIR pedidos
+(sumar stock), pero no podrá guardar la lista compartida de "por pedir / pedido".
+
 ## Notas importantes
 
 - Cada vez que quieras actualizar la app, solo subes los cambios a GitHub (`git push`) y Vercel la actualiza sola.

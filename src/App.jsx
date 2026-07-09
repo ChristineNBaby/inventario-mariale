@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Plus, Package, Receipt, Search, X, Camera, TrendingDown, DollarSign, RefreshCw, CreditCard, Banknote, Landmark, Calendar, Link2, ListChecks } from "lucide-react";
+import { Plus, Package, Receipt, Search, X, Camera, TrendingDown, DollarSign, RefreshCw, CreditCard, Banknote, Landmark, Calendar, Link2, ListChecks, ShoppingCart, PackageCheck, ClipboardList, Truck } from "lucide-react";
 
 // ---------- Paleta Dr. Mariale Rivers ----------
 // Fondo:      #F7F4EC (crema natural)
@@ -40,21 +40,21 @@ const SHOPIFY_LOCATION_ID = "gid://shopify/Location/79362425046"; // Clínica
 // terminan expuestas en el navegador). Vive solo en el servidor, dentro de /api/set-inventory,
 // y este código le pide a esa función que haga el trabajo por nosotros.
 
-// Descuenta el stock de un producto en Shopify, en la ubicación "Clínica", a través
-// de la función de servidor /api/set-inventory. Devuelve { ok: true } si funcionó, o
-// { ok: false, error } si algo falló — la venta en la app se guarda de todos modos,
-// para nunca perder el registro.
-async function descontarStockEnShopify(inventoryItemId, cantidadVendida, stockActualEnShopify) {
+// Regla del equipo: cuando quedan MENOS de 2 unidades, hay que pedir más.
+// La pestaña "Pedidos" arma sola la lista de "por pedir" con este número.
+const UMBRAL_PEDIDO = 2;
+
+// Descuenta el stock de un producto en Shopify (ubicación "Clínica") a través de
+// /api/ajustar-stock. Manda un delta (-cantidad) en vez del total: Shopify hace la
+// resta, así aunque dos personas vendan al mismo tiempo nadie pisa el cambio del
+// otro. Devuelve { ok, stockNuevo } o { ok: false, error } — la venta en la app se
+// guarda de todos modos, para nunca perder el registro.
+async function descontarStockEnShopify(variantId, cantidadVendida) {
   try {
-    const nuevaCantidad = Math.max(0, stockActualEnShopify - cantidadVendida);
-    const response = await fetch("/api/set-inventory", {
+    const response = await fetch("/api/ajustar-stock", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        inventoryItemId,
-        locationId: SHOPIFY_LOCATION_ID,
-        quantity: nuevaCantidad,
-      }),
+      body: JSON.stringify({ variantId, delta: -cantidadVendida, motivo: "venta" }),
     });
     return await response.json();
   } catch (err) {
@@ -68,6 +68,7 @@ function Badge({ children, tone = "default" }) {
     low: "bg-[#A6402F]/10 text-[#A6402F]",
     ok: "bg-[#4B6B4F]/12 text-[#4B6B4F]",
     servicio: "bg-[#6B4E71]/12 text-[#6B4E71]",
+    pedido: "bg-[#C89B3C]/15 text-[#7A5B14]",
   };
   return <span className={`text-xs font-medium px-2 py-1 rounded-full ${tones[tone]}`}>{children}</span>;
 }
@@ -100,6 +101,9 @@ function ProductCard({ p, onSell, onEdit }) {
           </Badge>
           {p.tipo === "producto" && (
             <Badge tone={bajo ? "low" : "ok"}>{bajo ? "Stock bajo: " : "Stock: "}{p.stock}</Badge>
+          )}
+          {p.pedido?.estado === "pedido" && (
+            <Badge tone="pedido">Pedido: {p.pedido.cantidad ?? "—"}</Badge>
           )}
         </div>
         <p className="text-xs text-[#8A8368] mt-1">{p.metodoPago}</p>
@@ -142,11 +146,15 @@ export default function App() {
   const [confirmacionStock, setConfirmacionStock] = useState(null);
   const [showResumen, setShowResumen] = useState(false);
   const [cargandoProductos, setCargandoProductos] = useState(true);
+  const [pedidoTarget, setPedidoTarget] = useState(null);
+  const [recibirTarget, setRecibirTarget] = useState(null);
+  const [aviso, setAviso] = useState(null);
 
-  // Al abrir la app, trae el catálogo real y actualizado desde Shopify.
-  // Si falla (sin conexión, Shopify no configurado, etc.), se queda con los
-  // productos de prueba para que la app siga siendo utilizable.
-  useEffect(() => {
+  // Trae el catálogo real y actualizado desde Shopify (productos, stock y estado
+  // de pedidos). Si falla (sin conexión, Shopify no configurado, etc.), se queda
+  // con los productos de prueba para que la app siga siendo utilizable.
+  function cargarProductos() {
+    setCargandoProductos(true);
     fetch("/api/get-products")
       .then((r) => r.json())
       .then((data) => {
@@ -157,7 +165,16 @@ export default function App() {
       })
       .catch(() => {})
       .finally(() => setCargandoProductos(false));
+  }
+
+  useEffect(() => {
+    cargarProductos();
   }, []);
+
+  function mostrarAviso(texto, tono = "ok") {
+    setAviso({ texto, tono });
+    setTimeout(() => setAviso(null), 4500);
+  }
 
   const filtered = products.filter((p) => p.nombre.toLowerCase().includes(query.toLowerCase()));
 
@@ -195,7 +212,13 @@ export default function App() {
 
       // 2. Intenta descontar el mismo stock en Shopify (ubicación Clínica)
       if (producto.shopifyVariantId) {
-        shopifyResultado = await descontarStockEnShopify(producto.shopifyVariantId, cantidad, producto.stock);
+        shopifyResultado = await descontarStockEnShopify(producto.shopifyVariantId, cantidad);
+        // Shopify devuelve el stock real después de restar — lo usamos por si
+        // otra persona movió inventario al mismo tiempo.
+        if (shopifyResultado?.ok && shopifyResultado.stockNuevo != null) {
+          nuevoStock = shopifyResultado.stockNuevo;
+          setProducts((prev) => prev.map((p) => p.id === producto.id ? { ...p, stock: shopifyResultado.stockNuevo } : p));
+        }
       }
     }
 
@@ -212,8 +235,103 @@ export default function App() {
     setTimeout(() => setConfirmacionStock(null), 4000);
   }
 
+  // ---------- Pedidos (reabastecimiento) ----------
+  function actualizarPedidoLocal(productoId, pedido) {
+    setProducts((prev) => prev.map((p) => (p.id === productoId ? { ...p, pedido } : p)));
+  }
+
+  async function llamarApiPedido(producto, accion, cantidad) {
+    try {
+      const response = await fetch("/api/pedido", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productId: producto.shopifyProductId, accion, cantidad }),
+      });
+      return await response.json();
+    } catch (err) {
+      return { ok: false, error: "No se pudo conectar con el servidor." };
+    }
+  }
+
+  // Alguien marca a mano un producto como "hay que pedirlo".
+  async function marcarPorPedir(producto) {
+    const anterior = producto.pedido || null;
+    actualizarPedidoLocal(producto.id, { estado: "por_pedir", fecha: new Date().toISOString() });
+    const r = await llamarApiPedido(producto, "por_pedir");
+    if (!r.ok) {
+      actualizarPedidoLocal(producto.id, anterior);
+      mostrarAviso(`No se pudo guardar: ${r.error}`, "error");
+    }
+  }
+
+  // Quita un producto de la lista de pedidos (o cancela un pedido anotado).
+  async function quitarDePedidos(producto) {
+    const anterior = producto.pedido || null;
+    actualizarPedidoLocal(producto.id, null);
+    const r = await llamarApiPedido(producto, "quitar");
+    if (!r.ok) {
+      actualizarPedidoLocal(producto.id, anterior);
+      mostrarAviso(`No se pudo quitar: ${r.error}`, "error");
+    }
+  }
+
+  // Se anotó un pedido al proveedor, con la cantidad ordenada.
+  async function handleMarcarPedido(form) {
+    const producto = pedidoTarget;
+    const cantidad = Number(form.cantidad);
+    setPedidoTarget(null);
+    const anterior = producto.pedido || null;
+    actualizarPedidoLocal(producto.id, { estado: "pedido", cantidad, fecha: new Date().toISOString() });
+    const r = await llamarApiPedido(producto, "pedido", cantidad);
+    if (r.ok) {
+      mostrarAviso(`Pedido anotado: ${cantidad} × ${producto.nombre}. Todo el equipo lo ve.`);
+    } else {
+      actualizarPedidoLocal(producto.id, anterior);
+      mostrarAviso(`No se pudo guardar el pedido: ${r.error}`, "error");
+    }
+  }
+
+  // Llegó el pedido: la cantidad recibida se SUMA sola al stock en Shopify.
+  async function handleRecibir(form) {
+    const producto = recibirTarget;
+    const cantidad = Number(form.cantidad);
+    setRecibirTarget(null);
+    try {
+      const response = await fetch("/api/ajustar-stock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          productId: producto.shopifyProductId,
+          inventoryItemId: producto.inventoryItemId,
+          variantId: producto.shopifyVariantId,
+          delta: cantidad,
+          motivo: "recibido",
+        }),
+      });
+      const r = await response.json();
+      if (r.ok) {
+        const stockNuevo = r.stockNuevo != null ? r.stockNuevo : producto.stock + cantidad;
+        setProducts((prev) => prev.map((p) => (p.id === producto.id ? { ...p, stock: stockNuevo, pedido: null } : p)));
+        mostrarAviso(`Recibido: +${cantidad} ${producto.nombre}. Stock en Shopify: ${stockNuevo}.`);
+      } else {
+        mostrarAviso(`No se sumó en Shopify: ${r.error}`, "error");
+      }
+    } catch (err) {
+      mostrarAviso("No se pudo conectar con el servidor. Intenta de nuevo.", "error");
+    }
+  }
+
   const totalVentas = sales.reduce((sum, s) => sum + s.precio * s.cantidad, 0);
   const stockBajo = products.filter((p) => p.tipo === "producto" && p.stock <= 3).length;
+
+  // Listas para la pestaña "Pedidos": lo que está bajo el umbral (o marcado a
+  // mano) y lo que ya se ordenó al proveedor y está en camino.
+  const productosFisicos = products.filter((p) => p.tipo === "producto");
+  const pedidosEnCamino = productosFisicos.filter((p) => p.pedido?.estado === "pedido");
+  const porPedir = productosFisicos.filter(
+    (p) => p.pedido?.estado !== "pedido" && (p.stock < UMBRAL_PEDIDO || p.pedido?.estado === "por_pedir")
+  );
+  const pendientes = porPedir.length + pedidosEnCamino.length;
 
   // Reporte agrupado por día
   const porDia = sales.reduce((acc, s) => {
@@ -254,9 +372,17 @@ export default function App() {
         </div>
       </header>
 
-      <div className="flex px-5 gap-2 mt-4">
+      <div className="flex flex-wrap px-5 gap-2 mt-4">
         <button onClick={() => setTab("inventario")} className={`flex items-center gap-1.5 text-sm font-medium px-4 py-2 rounded-full transition ${tab === "inventario" ? "bg-[#4B6B4F] text-white" : "bg-white text-[#2F4A33] border border-[#E4DFCE]"}`}>
           <Package className="w-4 h-4" /> Inventario
+        </button>
+        <button onClick={() => setTab("pedidos")} className={`flex items-center gap-1.5 text-sm font-medium px-4 py-2 rounded-full transition ${tab === "pedidos" ? "bg-[#4B6B4F] text-white" : "bg-white text-[#2F4A33] border border-[#E4DFCE]"}`}>
+          <ShoppingCart className="w-4 h-4" /> Pedidos
+          {pendientes > 0 && (
+            <span className={`text-xs font-bold rounded-full px-1.5 min-w-[1.25rem] text-center ${tab === "pedidos" ? "bg-white/25 text-white" : "bg-[#A6402F] text-white"}`}>
+              {pendientes}
+            </span>
+          )}
         </button>
         <button onClick={() => setTab("ventas")} className={`flex items-center gap-1.5 text-sm font-medium px-4 py-2 rounded-full transition ${tab === "ventas" ? "bg-[#4B6B4F] text-white" : "bg-white text-[#2F4A33] border border-[#E4DFCE]"}`}>
           <Receipt className="w-4 h-4" /> Ventas
@@ -287,6 +413,20 @@ export default function App() {
               {filtered.map((p) => <ProductCard key={p.id} p={p} onSell={setSellTarget} onEdit={setEditTarget} />)}
             </div>
           </>
+        )}
+
+        {tab === "pedidos" && (
+          <PedidosTab
+            porPedir={porPedir}
+            enCamino={pedidosEnCamino}
+            productos={productosFisicos}
+            cargando={cargandoProductos}
+            onRefrescar={cargarProductos}
+            onMarcarPorPedir={marcarPorPedir}
+            onQuitar={quitarDePedidos}
+            onAbrirPedido={setPedidoTarget}
+            onAbrirRecibir={setRecibirTarget}
+          />
         )}
 
         {tab === "ventas" && (
@@ -378,6 +518,12 @@ export default function App() {
         </div>
       )}
 
+      {aviso && (
+        <div className={`fixed top-20 left-1/2 -translate-x-1/2 z-50 rounded-xl shadow-lg px-4 py-3 text-sm max-w-xs text-white ${aviso.tono === "error" ? "bg-[#A6402F]" : "bg-[#2F4A33]"}`}>
+          {aviso.texto}
+        </div>
+      )}
+
       {tab === "inventario" && (
         <button onClick={() => setShowAdd(true)} className="fixed bottom-6 right-6 bg-[#4B6B4F] text-white w-14 h-14 rounded-full shadow-lg flex items-center justify-center hover:bg-[#3A5540] transition">
           <Plus className="w-6 h-6" />
@@ -388,6 +534,8 @@ export default function App() {
       {editTarget && <ProductForm title="Editar" initial={editTarget} onClose={() => setEditTarget(null)} onSubmit={handleEditProduct} />}
       {sellTarget && <SellForm target={sellTarget} onClose={() => setSellTarget(null)} onSubmit={handleSell} />}
       {showResumen && <ResumenInventario products={products} onClose={() => setShowResumen(false)} />}
+      {pedidoTarget && <PedidoForm target={pedidoTarget} onClose={() => setPedidoTarget(null)} onSubmit={handleMarcarPedido} />}
+      {recibirTarget && <RecibirForm target={recibirTarget} onClose={() => setRecibirTarget(null)} onSubmit={handleRecibir} />}
     </div>
   );
 }
@@ -443,6 +591,187 @@ function ResumenInventario({ products, onClose }) {
             </div>
           </div>
         )}
+      </div>
+    </Modal>
+  );
+}
+
+function FotoMini({ p }) {
+  return (
+    <div className="w-11 h-11 rounded-lg bg-[#F7F4EC] border border-[#E4DFCE] flex items-center justify-center overflow-hidden shrink-0">
+      {p.foto ? <img src={p.foto} alt={p.nombre} className="w-full h-full object-cover" /> : <Camera className="w-4 h-4 text-[#4B6B4F]/40" />}
+    </div>
+  );
+}
+
+function formatearFecha(iso) {
+  if (!iso) return "";
+  return new Date(iso).toLocaleDateString("es-GT", { day: "numeric", month: "short" });
+}
+
+// Pestaña de reabastecimiento. La lista "Por pedir" se arma SOLA con los productos
+// bajo el umbral — nadie tiene que revisar el inventario a mano. El flujo es:
+// Por pedir → "Ya lo pedí" (con cantidad) → En camino → "Llegó" → la cantidad
+// recibida se SUMA automáticamente al stock en Shopify.
+function PedidosTab({ porPedir, enCamino, productos, cargando, onRefrescar, onMarcarPorPedir, onQuitar, onAbrirPedido, onAbrirRecibir }) {
+  const [busca, setBusca] = useState("");
+
+  const yaListados = new Set([...porPedir, ...enCamino].map((p) => p.id));
+  const candidatos = busca.trim()
+    ? productos.filter((p) => !yaListados.has(p.id) && p.nombre.toLowerCase().includes(busca.toLowerCase())).slice(0, 5)
+    : [];
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs text-[#8A8368]">
+          Los productos con menos de {UMBRAL_PEDIDO} unidades entran solos a "Por pedir".
+        </p>
+        <button onClick={onRefrescar} className="flex items-center gap-1.5 text-xs bg-white border border-[#E4DFCE] px-2.5 py-1.5 rounded-full text-[#2F4A33] shrink-0">
+          <RefreshCw className={`w-3.5 h-3.5 ${cargando ? "animate-spin" : ""}`} /> Actualizar
+        </button>
+      </div>
+
+      <section>
+        <h3 className="flex items-center gap-2 font-serif font-bold text-[#A6402F] mb-2">
+          <ClipboardList className="w-4 h-4" /> Por pedir ({porPedir.length})
+        </h3>
+        {porPedir.length === 0 && (
+          <p className="text-sm text-[#8A8368] bg-white border border-[#E4DFCE] rounded-xl px-3 py-3">Nada por pedir — todo tiene stock suficiente ✓</p>
+        )}
+        <div className="space-y-2">
+          {porPedir.map((p) => (
+            <div key={p.id} className="bg-white rounded-xl border border-[#E4DFCE] p-3 flex items-center gap-3">
+              <FotoMini p={p} />
+              <div className="flex-1 min-w-0">
+                <p className="font-medium text-sm text-[#2F4A33] truncate">{p.nombre}</p>
+                <div className="flex items-center gap-2 mt-1 flex-wrap">
+                  <Badge tone="low">Quedan {p.stock}</Badge>
+                  {p.pedido?.estado === "por_pedir" && <Badge>Marcado a mano</Badge>}
+                </div>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <button onClick={() => onAbrirPedido(p)} className="text-xs font-medium bg-[#C89B3C] text-white px-3 py-1.5 rounded-lg hover:opacity-90 transition">
+                  Ya lo pedí
+                </button>
+                {p.pedido?.estado === "por_pedir" && (
+                  <button onClick={() => onQuitar(p)} className="text-[#8A8368] p-1.5 hover:text-[#A6402F]" title="Quitar de la lista">
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section>
+        <h3 className="flex items-center gap-2 font-serif font-bold text-[#7A5B14] mb-2">
+          <Truck className="w-4 h-4" /> En camino ({enCamino.length})
+        </h3>
+        {enCamino.length === 0 && (
+          <p className="text-sm text-[#8A8368] bg-white border border-[#E4DFCE] rounded-xl px-3 py-3">Ningún pedido en camino.</p>
+        )}
+        <div className="space-y-2">
+          {enCamino.map((p) => (
+            <div key={p.id} className="bg-white rounded-xl border border-[#E4DFCE] p-3 flex items-center gap-3">
+              <FotoMini p={p} />
+              <div className="flex-1 min-w-0">
+                <p className="font-medium text-sm text-[#2F4A33] truncate">{p.nombre}</p>
+                <p className="text-xs text-[#8A8368] mt-0.5">
+                  Pedidas: {p.pedido?.cantidad ?? "?"}{p.pedido?.fecha ? ` · ${formatearFecha(p.pedido.fecha)}` : ""} · stock {p.stock}
+                </p>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <button onClick={() => onAbrirRecibir(p)} className="flex items-center gap-1 text-xs font-medium bg-[#4B6B4F] text-white px-3 py-1.5 rounded-lg hover:bg-[#3A5540] transition">
+                  <PackageCheck className="w-3.5 h-3.5" /> Llegó
+                </button>
+                <button onClick={() => onQuitar(p)} className="text-[#8A8368] p-1.5 hover:text-[#A6402F]" title="Cancelar pedido">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section>
+        <h3 className="font-serif font-bold text-[#2F4A33] mb-2">¿Falta algo más?</h3>
+        <div className="relative">
+          <Search className="w-4 h-4 text-[#8A8368] absolute left-3 top-1/2 -translate-y-1/2" />
+          <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar producto para agregarlo a la lista..."
+            className="w-full bg-white border border-[#E4DFCE] rounded-xl pl-9 pr-3 py-2.5 text-sm placeholder:text-[#8A8368] focus:outline-none focus:ring-2 focus:ring-[#4B6B4F]/30" />
+        </div>
+        {candidatos.length > 0 && (
+          <div className="bg-white rounded-xl border border-[#E4DFCE] divide-y divide-[#E4DFCE] mt-2">
+            {candidatos.map((p) => (
+              <div key={p.id} className="flex items-center gap-3 px-3 py-2">
+                <FotoMini p={p} />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-[#2F4A33] truncate">{p.nombre}</p>
+                  <p className="text-xs text-[#8A8368]">Stock: {p.stock}</p>
+                </div>
+                <button onClick={() => { onMarcarPorPedir(p); setBusca(""); }}
+                  className="text-xs font-medium border border-[#4B6B4F] text-[#4B6B4F] px-3 py-1.5 rounded-lg hover:bg-[#4B6B4F]/5 transition shrink-0">
+                  + Por pedir
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+// La persona que ordena anota cuántas unidades pidió al proveedor.
+function PedidoForm({ target, onClose, onSubmit }) {
+  const [cantidad, setCantidad] = useState("");
+  return (
+    <Modal title={`Ya lo pedí: ${target.nombre}`} onClose={onClose}>
+      <div className="space-y-3">
+        <p className="text-sm text-[#8A8368]">Stock actual: {target.stock}. Anota cuántas unidades ordenaste — todo el equipo verá que ya está pedido.</p>
+        <label className="block">
+          <span className="text-xs font-medium text-[#2F4A33]">Cantidad pedida</span>
+          <input type="number" min="1" value={cantidad} onChange={(e) => setCantidad(e.target.value)} autoFocus
+            className="w-full mt-1 bg-white border border-[#E4DFCE] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#4B6B4F]/30" placeholder="Ej: 6" />
+        </label>
+        <button onClick={() => onSubmit({ cantidad })} disabled={!(Number(cantidad) > 0)}
+          className="w-full bg-[#C89B3C] text-white py-2.5 rounded-lg font-medium text-sm disabled:opacity-40">
+          Guardar pedido
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+// Llegó el pedido: se confirma la cantidad recibida y Shopify la SUMA al stock.
+// Nadie tiene que contar el total ni escribirlo — cero errores de dedo.
+function RecibirForm({ target, onClose, onSubmit }) {
+  const [cantidad, setCantidad] = useState(target.pedido?.cantidad || "");
+  const stockNuevo = target.stock + (Number(cantidad) || 0);
+  return (
+    <Modal title={`Recibir: ${target.nombre}`} onClose={onClose}>
+      <div className="space-y-3">
+        {target.pedido?.cantidad != null && (
+          <p className="text-sm text-[#8A8368]">
+            Se pidieron {target.pedido.cantidad} unidades{target.pedido.fecha ? ` el ${formatearFecha(target.pedido.fecha)}` : ""}.
+          </p>
+        )}
+        <label className="block">
+          <span className="text-xs font-medium text-[#2F4A33]">Cantidad recibida</span>
+          <input type="number" min="1" value={cantidad} onChange={(e) => setCantidad(e.target.value)} autoFocus
+            className="w-full mt-1 bg-white border border-[#E4DFCE] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#4B6B4F]/30" />
+        </label>
+        <div className="bg-[#F7F4EC] rounded-lg p-3 text-sm flex justify-between">
+          <span className="text-[#2F4A33]">Stock en Shopify</span>
+          <span className="font-serif font-bold text-[#4B6B4F]">{target.stock} → {stockNuevo}</span>
+        </div>
+        <p className="text-xs text-[#8A8368]">La cantidad se suma sola al stock actual — no hay que contar ni escribir el total.</p>
+        <button onClick={() => onSubmit({ cantidad })} disabled={!(Number(cantidad) > 0)}
+          className="w-full bg-[#4B6B4F] text-white py-2.5 rounded-lg font-medium text-sm disabled:opacity-40">
+          Confirmar recepción
+        </button>
       </div>
     </Modal>
   );
