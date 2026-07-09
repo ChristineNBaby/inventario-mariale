@@ -82,6 +82,28 @@ export default async function handler(req, res) {
 
     const cambios = data?.inventoryAdjustQuantities?.inventoryAdjustmentGroup?.changes || [];
     const disponible = cambios.find((c) => c.name === "available");
+    let stockNuevo = disponible ? disponible.quantityAfterChange : null;
+
+    // Algunas respuestas de Shopify no traen el total nuevo — lo consultamos
+    // directo para que la app siempre muestre el stock real.
+    if (stockNuevo == null) {
+      try {
+        const nivel = await shopifyGraphql(
+          config,
+          `query($id: ID!, $locationId: ID!) {
+            inventoryItem(id: $id) {
+              inventoryLevel(locationId: $locationId) {
+                quantities(names: ["available"]) { quantity }
+              }
+            }
+          }`,
+          { id: itemId, locationId: SHOPIFY_LOCATION_ID }
+        );
+        stockNuevo = nivel?.inventoryItem?.inventoryLevel?.quantities?.[0]?.quantity ?? null;
+      } catch (err) {
+        // Sin el total no pasa nada: la app lo calcula localmente.
+      }
+    }
 
     // Si fue una recepción, quitamos el producto de la lista de pedidos.
     // Si esto falla no arruinamos la operación: el stock ya quedó bien sumado.
@@ -99,7 +121,7 @@ export default async function handler(req, res) {
       }
     }
 
-    res.status(200).json({ ok: true, stockNuevo: disponible ? disponible.quantityAfterChange : null });
+    res.status(200).json({ ok: true, stockNuevo });
   } catch (err) {
     res.status(200).json({ ok: false, error: err.message || "No se pudo conectar con Shopify." });
   }

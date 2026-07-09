@@ -37,8 +37,8 @@ const metodosPago = [
 const SHOPIFY_LOCATION_ID = "gid://shopify/Location/79362425046"; // Clínica
 
 // La llave de acceso a Shopify ya no vive aquí ni en ninguna variable VITE_ (esas
-// terminan expuestas en el navegador). Vive solo en el servidor, dentro de /api/set-inventory,
-// y este código le pide a esa función que haga el trabajo por nosotros.
+// terminan expuestas en el navegador). Vive solo en el servidor, dentro de /api,
+// y este código le pide a esas funciones que hagan el trabajo por nosotros.
 
 // Regla del equipo: cuando quedan MENOS de 2 unidades, hay que pedir más.
 // La pestaña "Pedidos" arma sola la lista de "por pedir" con este número.
