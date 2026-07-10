@@ -2,9 +2,12 @@
 // metafield del producto EN SHOPIFY (namespace "inventario", key "pedido"),
 // así todas las personas del equipo ven la misma lista desde cualquier
 // celular/iPad, y también queda visible en el admin de Shopify.
-//   - accion "por_pedir": alguien lo marcó a mano como pendiente de pedir
-//   - accion "pedido":    ya se ordenó al proveedor (con la cantidad pedida)
-//   - accion "quitar":    sacarlo de la lista
+//   - accion "por_pedir":  alguien lo marcó a mano como pendiente de pedir
+//   - accion "pedido":     ya se ordenó al proveedor (con la cantidad pedida)
+//   - accion "backorder":  agotado con el proveedor; con fecha de regreso opcional
+//                          (hastaFecha) o sin fecha = "hasta confirmación"
+//   - accion "descartado": quitarlo de "por pedir" aunque tenga stock bajo
+//   - accion "quitar":     sacarlo de la lista (borra el estado)
 import { leerConfig, shopifyGraphql } from "./_shopify.js";
 
 export default async function handler(req, res) {
@@ -19,9 +22,9 @@ export default async function handler(req, res) {
     return;
   }
 
-  const { productId, accion, cantidad } = req.body || {};
-  if (!productId || !["por_pedir", "pedido", "quitar"].includes(accion)) {
-    res.status(400).json({ ok: false, error: "Faltan datos: productId y accion (por_pedir, pedido o quitar)." });
+  const { productId, accion, cantidad, hastaFecha } = req.body || {};
+  if (!productId || !["por_pedir", "pedido", "backorder", "descartado", "quitar"].includes(accion)) {
+    res.status(400).json({ ok: false, error: "Faltan datos: productId y accion (por_pedir, pedido, backorder, descartado o quitar)." });
     return;
   }
 
@@ -43,6 +46,8 @@ export default async function handler(req, res) {
       const valor = {
         estado: accion,
         cantidad: accion === "pedido" ? Number(cantidad) || null : null,
+        // Para backorder: fecha estimada de regreso, o null = "hasta confirmación".
+        hastaFecha: accion === "backorder" && typeof hastaFecha === "string" && hastaFecha ? hastaFecha : null,
         fecha: new Date().toISOString(),
       };
       const data = await shopifyGraphql(

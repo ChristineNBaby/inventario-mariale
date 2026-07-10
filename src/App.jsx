@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Plus, Package, Receipt, Search, X, Camera, TrendingDown, DollarSign, RefreshCw, CreditCard, Banknote, Landmark, Calendar, Link2, ListChecks, ShoppingCart, PackageCheck, ClipboardList, Truck } from "lucide-react";
+import { Plus, Package, Receipt, Search, X, Camera, TrendingDown, DollarSign, RefreshCw, CreditCard, Banknote, Landmark, Calendar, Link2, ListChecks, ShoppingCart, PackageCheck, ClipboardList, Truck, Hourglass } from "lucide-react";
 
 // ---------- Paleta Dr. Mariale Rivers ----------
 // Fondo:      #F7F4EC (crema natural)
@@ -105,6 +105,11 @@ function ProductCard({ p, onSell, onEdit }) {
           {p.pedido?.estado === "pedido" && (
             <Badge tone="pedido">Pedido: {p.pedido.cantidad ?? "—"}</Badge>
           )}
+          {p.pedido?.estado === "backorder" && (
+            <Badge tone="servicio">
+              {p.pedido.hastaFecha ? `Agotado, regresa ${formatearFecha(p.pedido.hastaFecha)}` : "Agotado hasta confirmación"}
+            </Badge>
+          )}
         </div>
         <p className="text-xs text-[#8A8368] mt-1">{p.metodoPago}</p>
         <div className="flex gap-2 mt-3">
@@ -148,6 +153,7 @@ export default function App() {
   const [cargandoProductos, setCargandoProductos] = useState(true);
   const [pedidoTarget, setPedidoTarget] = useState(null);
   const [recibirTarget, setRecibirTarget] = useState(null);
+  const [backorderTarget, setBackorderTarget] = useState(null);
   const [aviso, setAviso] = useState(null);
 
   // Trae el catálogo real y actualizado desde Shopify (productos, stock y estado
@@ -240,12 +246,12 @@ export default function App() {
     setProducts((prev) => prev.map((p) => (p.id === productoId ? { ...p, pedido } : p)));
   }
 
-  async function llamarApiPedido(producto, accion, cantidad) {
+  async function llamarApiPedido(producto, accion, cantidad, hastaFecha) {
     try {
       const response = await fetch("/api/pedido", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ productId: producto.shopifyProductId, accion, cantidad }),
+        body: JSON.stringify({ productId: producto.shopifyProductId, accion, cantidad, hastaFecha }),
       });
       return await response.json();
     } catch (err) {
@@ -272,6 +278,39 @@ export default function App() {
     if (!r.ok) {
       actualizarPedidoLocal(producto.id, anterior);
       mostrarAviso(`No se pudo quitar: ${r.error}`, "error");
+    }
+  }
+
+  // Esconde un producto de "Por pedir" aunque tenga stock bajo (p. ej. algo que
+  // ya no se va a volver a pedir). Se puede regresar buscándolo abajo.
+  async function descartarDePedidos(producto) {
+    const anterior = producto.pedido || null;
+    actualizarPedidoLocal(producto.id, { estado: "descartado", fecha: new Date().toISOString() });
+    const r = await llamarApiPedido(producto, "descartado");
+    if (r.ok) {
+      mostrarAviso(`${producto.nombre} se quitó de la lista. Puedes regresarlo buscándolo abajo.`);
+    } else {
+      actualizarPedidoLocal(producto.id, anterior);
+      mostrarAviso(`No se pudo quitar: ${r.error}`, "error");
+    }
+  }
+
+  // El proveedor no tiene el producto: queda en "back order" con fecha estimada
+  // de regreso, o sin fecha ("hasta confirmación").
+  async function handleBackorder(form) {
+    const producto = backorderTarget;
+    setBackorderTarget(null);
+    const anterior = producto.pedido || null;
+    const hastaFecha = form.hastaFecha || null;
+    actualizarPedidoLocal(producto.id, { estado: "backorder", hastaFecha, fecha: new Date().toISOString() });
+    const r = await llamarApiPedido(producto, "backorder", null, hastaFecha);
+    if (r.ok) {
+      mostrarAviso(hastaFecha
+        ? `${producto.nombre}: agotado con proveedor, regresa ${formatearFecha(hastaFecha)}.`
+        : `${producto.nombre}: agotado con proveedor hasta confirmación.`);
+    } else {
+      actualizarPedidoLocal(producto.id, anterior);
+      mostrarAviso(`No se pudo guardar: ${r.error}`, "error");
     }
   }
 
@@ -325,11 +364,14 @@ export default function App() {
   const stockBajo = products.filter((p) => p.tipo === "producto" && p.stock <= 3).length;
 
   // Listas para la pestaña "Pedidos": lo que está bajo el umbral (o marcado a
-  // mano) y lo que ya se ordenó al proveedor y está en camino.
+  // mano), lo que ya se ordenó y está en camino, y lo agotado con el proveedor.
+  // Los "descartado" no aparecen en ninguna lista aunque tengan stock bajo.
   const productosFisicos = products.filter((p) => p.tipo === "producto");
   const pedidosEnCamino = productosFisicos.filter((p) => p.pedido?.estado === "pedido");
+  const backOrders = productosFisicos.filter((p) => p.pedido?.estado === "backorder");
   const porPedir = productosFisicos.filter(
-    (p) => p.pedido?.estado !== "pedido" && (p.stock < UMBRAL_PEDIDO || p.pedido?.estado === "por_pedir")
+    (p) => !["pedido", "backorder", "descartado"].includes(p.pedido?.estado) &&
+      (p.stock < UMBRAL_PEDIDO || p.pedido?.estado === "por_pedir")
   );
   const pendientes = porPedir.length + pedidosEnCamino.length;
 
@@ -419,13 +461,16 @@ export default function App() {
           <PedidosTab
             porPedir={porPedir}
             enCamino={pedidosEnCamino}
+            backOrders={backOrders}
             productos={productosFisicos}
             cargando={cargandoProductos}
             onRefrescar={cargarProductos}
             onMarcarPorPedir={marcarPorPedir}
             onQuitar={quitarDePedidos}
+            onDescartar={descartarDePedidos}
             onAbrirPedido={setPedidoTarget}
             onAbrirRecibir={setRecibirTarget}
+            onAbrirBackorder={setBackorderTarget}
           />
         )}
 
@@ -536,6 +581,7 @@ export default function App() {
       {showResumen && <ResumenInventario products={products} onClose={() => setShowResumen(false)} />}
       {pedidoTarget && <PedidoForm target={pedidoTarget} onClose={() => setPedidoTarget(null)} onSubmit={handleMarcarPedido} />}
       {recibirTarget && <RecibirForm target={recibirTarget} onClose={() => setRecibirTarget(null)} onSubmit={handleRecibir} />}
+      {backorderTarget && <BackorderForm target={backorderTarget} onClose={() => setBackorderTarget(null)} onSubmit={handleBackorder} />}
     </div>
   );
 }
@@ -606,17 +652,23 @@ function FotoMini({ p }) {
 
 function formatearFecha(iso) {
   if (!iso) return "";
-  return new Date(iso).toLocaleDateString("es-GT", { day: "numeric", month: "short" });
+  // Las fechas "solo día" (2026-09-15) se interpretan a mediodía para que no
+  // se corran un día hacia atrás por la zona horaria de Guatemala.
+  const valor = /^\d{4}-\d{2}-\d{2}$/.test(iso) ? `${iso}T12:00:00` : iso;
+  const fecha = new Date(valor);
+  const opciones = { day: "numeric", month: "short" };
+  if (fecha.getFullYear() !== new Date().getFullYear()) opciones.year = "numeric";
+  return fecha.toLocaleDateString("es-GT", opciones);
 }
 
 // Pestaña de reabastecimiento. La lista "Por pedir" se arma SOLA con los productos
 // bajo el umbral — nadie tiene que revisar el inventario a mano. El flujo es:
 // Por pedir → "Ya lo pedí" (con cantidad) → En camino → "Llegó" → la cantidad
 // recibida se SUMA automáticamente al stock en Shopify.
-function PedidosTab({ porPedir, enCamino, productos, cargando, onRefrescar, onMarcarPorPedir, onQuitar, onAbrirPedido, onAbrirRecibir }) {
+function PedidosTab({ porPedir, enCamino, backOrders, productos, cargando, onRefrescar, onMarcarPorPedir, onQuitar, onDescartar, onAbrirPedido, onAbrirRecibir, onAbrirBackorder }) {
   const [busca, setBusca] = useState("");
 
-  const yaListados = new Set([...porPedir, ...enCamino].map((p) => p.id));
+  const yaListados = new Set([...porPedir, ...enCamino, ...backOrders].map((p) => p.id));
   const candidatos = busca.trim()
     ? productos.filter((p) => !yaListados.has(p.id) && p.nombre.toLowerCase().includes(busca.toLowerCase())).slice(0, 5)
     : [];
@@ -654,11 +706,12 @@ function PedidosTab({ porPedir, enCamino, productos, cargando, onRefrescar, onMa
                 <button onClick={() => onAbrirPedido(p)} className="text-xs font-medium bg-[#C89B3C] text-white px-3 py-1.5 rounded-lg hover:opacity-90 transition">
                   Ya lo pedí
                 </button>
-                {p.pedido?.estado === "por_pedir" && (
-                  <button onClick={() => onQuitar(p)} className="text-[#8A8368] p-1.5 hover:text-[#A6402F]" title="Quitar de la lista">
-                    <X className="w-4 h-4" />
-                  </button>
-                )}
+                <button onClick={() => onAbrirBackorder(p)} className="text-[#6B4E71] border border-[#6B4E71]/30 p-1.5 rounded-lg hover:bg-[#6B4E71]/5 transition" title="Agotado con proveedor (back order)">
+                  <Hourglass className="w-4 h-4" />
+                </button>
+                <button onClick={() => onDescartar(p)} className="text-[#8A8368] p-1.5 hover:text-[#A6402F]" title="Quitar de la lista">
+                  <X className="w-4 h-4" />
+                </button>
               </div>
             </div>
           ))}
@@ -696,6 +749,39 @@ function PedidosTab({ porPedir, enCamino, productos, cargando, onRefrescar, onMa
       </section>
 
       <section>
+        <h3 className="flex items-center gap-2 font-serif font-bold text-[#6B4E71] mb-2">
+          <Hourglass className="w-4 h-4" /> Agotado con proveedor ({backOrders.length})
+        </h3>
+        {backOrders.length === 0 && (
+          <p className="text-sm text-[#8A8368] bg-white border border-[#E4DFCE] rounded-xl px-3 py-3">Nada en back order.</p>
+        )}
+        <div className="space-y-2">
+          {backOrders.map((p) => (
+            <div key={p.id} className="bg-white rounded-xl border border-[#E4DFCE] p-3 flex items-center gap-3">
+              <FotoMini p={p} />
+              <div className="flex-1 min-w-0">
+                <p className="font-medium text-sm text-[#2F4A33] truncate">{p.nombre}</p>
+                <div className="flex items-center gap-2 mt-1 flex-wrap">
+                  <Badge tone="servicio">
+                    {p.pedido?.hastaFecha ? `Regresa: ${formatearFecha(p.pedido.hastaFecha)}` : "Hasta confirmación"}
+                  </Badge>
+                  <span className="text-xs text-[#8A8368]">stock {p.stock}</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <button onClick={() => onAbrirPedido(p)} className="text-xs font-medium bg-[#C89B3C] text-white px-3 py-1.5 rounded-lg hover:opacity-90 transition">
+                  Ya lo pedí
+                </button>
+                <button onClick={() => onQuitar(p)} className="text-[#8A8368] p-1.5 hover:text-[#A6402F]" title="Quitar de back order">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section>
         <h3 className="font-serif font-bold text-[#2F4A33] mb-2">¿Falta algo más?</h3>
         <div className="relative">
           <Search className="w-4 h-4 text-[#8A8368] absolute left-3 top-1/2 -translate-y-1/2" />
@@ -721,6 +807,34 @@ function PedidosTab({ porPedir, enCamino, productos, cargando, onRefrescar, onMa
         )}
       </section>
     </div>
+  );
+}
+
+// El proveedor no tiene el producto: se anota cuándo regresa (o sin fecha,
+// "hasta confirmación") para que nadie lo siga intentando pedir.
+function BackorderForm({ target, onClose, onSubmit }) {
+  const [hastaFecha, setHastaFecha] = useState(target.pedido?.hastaFecha || "");
+  return (
+    <Modal title={`Agotado con proveedor: ${target.nombre}`} onClose={onClose}>
+      <div className="space-y-3">
+        <p className="text-sm text-[#8A8368]">
+          El producto pasa a la sección "Back order" y sale de "Por pedir". Anota la fecha en que el proveedor dice que regresa, o guárdalo sin fecha.
+        </p>
+        <label className="block">
+          <span className="text-xs font-medium text-[#2F4A33]">Fecha estimada de regreso</span>
+          <input type="date" value={hastaFecha} onChange={(e) => setHastaFecha(e.target.value)}
+            className="w-full mt-1 bg-white border border-[#E4DFCE] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#4B6B4F]/30" />
+        </label>
+        <button onClick={() => onSubmit({ hastaFecha })} disabled={!hastaFecha}
+          className="w-full bg-[#6B4E71] text-white py-2.5 rounded-lg font-medium text-sm disabled:opacity-40">
+          Guardar con fecha
+        </button>
+        <button onClick={() => onSubmit({ hastaFecha: null })}
+          className="w-full border border-[#6B4E71] text-[#6B4E71] py-2.5 rounded-lg font-medium text-sm hover:bg-[#6B4E71]/5 transition">
+          Hasta confirmación (sin fecha)
+        </button>
+      </div>
+    </Modal>
   );
 }
 
