@@ -4,9 +4,15 @@
 //   - Una venta manda delta negativo (motivo "venta").
 //   - Una recepción de pedido manda delta positivo (motivo "recibido") y además
 //     quita el producto de la lista de pedidos pendientes.
+//
+// IMPORTANTE — dos ubicaciones: el inventario de la tienda está repartido entre
+// "Clínica" y "Shop location". Para no crear números negativos ni descuadres,
+// el ajuste se aplica en la ubicación que HOY tiene existencias del producto
+// (la de mayor cantidad). Si ninguna tiene, usamos "Clínica" (donde llega la
+// mercadería nueva). El stock que devolvemos es el TOTAL de todas las ubicaciones.
 import { leerConfig, shopifyGraphql } from "./_shopify.js";
 
-const SHOPIFY_LOCATION_ID = "gid://shopify/Location/79362425046"; // Clínica
+const SHOPIFY_LOCATION_CLINICA = "gid://shopify/Location/79362425046"; // Clínica
 
 // Motivos que entiende la app → razones oficiales de Shopify (aparecen en el
 // historial de inventario del admin).
@@ -40,28 +46,61 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Si solo tenemos el ID de la variante, resolvemos el inventory item asociado.
-    let itemId = inventoryItemId;
+    // Resolvemos el inventory item (desde la variante si hace falta) y de paso
+    // leemos cuánto hay en cada ubicación, para saber dónde aplicar el ajuste.
+    const itemData = await shopifyGraphql(
+      config,
+      inventoryItemId
+        ? `query($id: ID!) {
+            inventoryItem(id: $id) {
+              id
+              inventoryLevels(first: 20) {
+                edges { node { location { id } quantities(names: ["available"]) { quantity } } }
+              }
+            }
+          }`
+        : `query($id: ID!) {
+            productVariant(id: $id) {
+              inventoryItem {
+                id
+                inventoryLevels(first: 20) {
+                  edges { node { location { id } quantities(names: ["available"]) { quantity } } }
+                }
+              }
+            }
+          }`,
+      { id: inventoryItemId || variantId }
+    );
+
+    const item = inventoryItemId ? itemData?.inventoryItem : itemData?.productVariant?.inventoryItem;
+    const itemId = item?.id;
     if (!itemId) {
-      const variantData = await shopifyGraphql(
-        config,
-        `query($id: ID!) { productVariant(id: $id) { inventoryItem { id } } }`,
-        { id: variantId }
-      );
-      itemId = variantData?.productVariant?.inventoryItem?.id;
-      if (!itemId) {
-        res.status(200).json({ ok: false, error: "No se encontró el inventory item de esa variante." });
-        return;
+      res.status(200).json({ ok: false, error: "No se encontró el inventory item del producto." });
+      return;
+    }
+
+    const niveles = (item.inventoryLevels?.edges || []).map((e) => ({
+      locationId: e.node.location.id,
+      cantidad: e.node.quantities?.[0]?.quantity ?? 0,
+    }));
+
+    // Ubicación objetivo: la que más existencias tiene hoy. Si ninguna tiene
+    // (producto agotado o recién llegado), usamos Clínica.
+    let objetivo = SHOPIFY_LOCATION_CLINICA;
+    let mejor = -Infinity;
+    for (const n of niveles) {
+      if (n.cantidad > mejor) {
+        mejor = n.cantidad;
+        objetivo = n.locationId;
       }
     }
+    if (mejor <= 0) objetivo = SHOPIFY_LOCATION_CLINICA;
 
     const data = await shopifyGraphql(
       config,
       `mutation($input: InventoryAdjustQuantitiesInput!) {
         inventoryAdjustQuantities(input: $input) {
-          inventoryAdjustmentGroup {
-            changes { name delta quantityAfterChange }
-          }
+          inventoryAdjustmentGroup { changes { name delta quantityAfterChange } }
           userErrors { field message }
         }
       }`,
@@ -69,7 +108,7 @@ export default async function handler(req, res) {
         input: {
           reason: MOTIVOS[motivo] || "correction",
           name: "available",
-          changes: [{ delta: cambio, inventoryItemId: itemId, locationId: SHOPIFY_LOCATION_ID }],
+          changes: [{ delta: cambio, inventoryItemId: itemId, locationId: objetivo }],
         },
       }
     );
@@ -80,30 +119,11 @@ export default async function handler(req, res) {
       return;
     }
 
-    const cambios = data?.inventoryAdjustQuantities?.inventoryAdjustmentGroup?.changes || [];
-    const disponible = cambios.find((c) => c.name === "available");
-    let stockNuevo = disponible ? disponible.quantityAfterChange : null;
-
-    // Algunas respuestas de Shopify no traen el total nuevo — lo consultamos
-    // directo para que la app siempre muestre el stock real.
-    if (stockNuevo == null) {
-      try {
-        const nivel = await shopifyGraphql(
-          config,
-          `query($id: ID!, $locationId: ID!) {
-            inventoryItem(id: $id) {
-              inventoryLevel(locationId: $locationId) {
-                quantities(names: ["available"]) { quantity }
-              }
-            }
-          }`,
-          { id: itemId, locationId: SHOPIFY_LOCATION_ID }
-        );
-        stockNuevo = nivel?.inventoryItem?.inventoryLevel?.quantities?.[0]?.quantity ?? null;
-      } catch (err) {
-        // Sin el total no pasa nada: la app lo calcula localmente.
-      }
-    }
+    // Nuevo total = suma de todas las ubicaciones. Partimos del total que ya
+    // teníamos (antes del ajuste) y le sumamos el delta: siempre correcto sin
+    // importar en qué ubicación cayó el cambio.
+    const totalAntes = niveles.reduce((s, n) => s + n.cantidad, 0);
+    const stockNuevo = totalAntes + cambio;
 
     // Si fue una recepción, quitamos el producto de la lista de pedidos.
     // Si esto falla no arruinamos la operación: el stock ya quedó bien sumado.

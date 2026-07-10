@@ -1,8 +1,11 @@
-// Trae todos los productos reales de Shopify (con precio, foto, stock en la
-// ubicación "Clínica" y estado de pedido) para mostrarlos en la app.
+// Trae todos los productos reales de Shopify (con precio, foto, stock TOTAL y
+// estado de pedido) para mostrarlos en la app.
+//
+// El stock se SUMA de todas las ubicaciones (Clínica + Shop location). El
+// inventario de esta tienda está repartido entre las dos, así que mirar una
+// sola daría números falsos (p. ej. un producto con 9 unidades en "Shop
+// location" se vería como 0). El total es lo que importa para la clínica.
 import { leerConfig, shopifyGraphql } from "./_shopify.js";
-
-const SHOPIFY_LOCATION_ID = "gid://shopify/Location/79362425046"; // Clínica
 
 // El estado de pedido vive como JSON en un metafield del producto.
 // Si el valor está corrupto o vacío, lo tratamos como "sin pedido".
@@ -42,8 +45,8 @@ export default async function handler(req, res) {
                     inventoryItem {
                       id
                       tracked
-                      inventoryLevel(locationId: "${SHOPIFY_LOCATION_ID}") {
-                        quantities(names: ["available"]) { quantity }
+                      inventoryLevels(first: 20) {
+                        edges { node { quantities(names: ["available"]) { quantity } } }
                       }
                     }
                   }
@@ -59,7 +62,9 @@ export default async function handler(req, res) {
       .filter(({ node }) => node.variants.edges[0]?.node?.inventoryItem?.tracked)
       .map(({ node }, i) => {
         const variant = node.variants.edges[0]?.node;
-        const cantidad = variant?.inventoryItem?.inventoryLevel?.quantities?.[0]?.quantity ?? 0;
+        // Sumamos las existencias de todas las ubicaciones.
+        const niveles = variant?.inventoryItem?.inventoryLevels?.edges || [];
+        const cantidad = niveles.reduce((s, e) => s + (e.node.quantities?.[0]?.quantity ?? 0), 0);
         return {
           id: i + 1,
           shopifyProductId: node.id,
