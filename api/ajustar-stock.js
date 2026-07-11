@@ -20,6 +20,7 @@ const MOTIVOS = {
   recibido: "received",
   venta: "other",
   correccion: "correction",
+  cancelacion: "restock", // venta cancelada → devuelve la cantidad al stock
 };
 
 export default async function handler(req, res) {

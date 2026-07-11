@@ -141,7 +141,16 @@ function Modal({ title, onClose, children }) {
 
 export default function App() {
   const [products, setProducts] = useState(initialProducts);
-  const [sales, setSales] = useState([]);
+  // Las ventas se guardan en el teléfono (localStorage) para que sirvan de
+  // registro y no se pierdan al cerrar o recargar la app. No se envían a Shopify.
+  const [sales, setSales] = useState(() => {
+    try {
+      const guardado = localStorage.getItem("ventas_clinica");
+      return guardado ? JSON.parse(guardado) : [];
+    } catch (err) {
+      return [];
+    }
+  });
   const [tab, setTab] = useState("inventario");
   const [query, setQuery] = useState("");
   const [showAdd, setShowAdd] = useState(false);
@@ -177,6 +186,13 @@ export default function App() {
     cargarProductos();
   }, []);
 
+  // Cada vez que cambian las ventas, las guarda en el teléfono.
+  useEffect(() => {
+    try {
+      localStorage.setItem("ventas_clinica", JSON.stringify(sales));
+    } catch (err) {}
+  }, [sales]);
+
   function mostrarAviso(texto, tono = "ok") {
     setAviso({ texto, tono });
     setTimeout(() => setAviso(null), 4500);
@@ -206,6 +222,8 @@ export default function App() {
     setSales((prev) => [{
       id: Date.now(), productoId: producto.id, nombre: producto.nombre, cantidad,
       precio: producto.precio, metodoPago: form.metodoPago, canal: "Presencial", fecha: new Date().toISOString(),
+      // Guardamos el tipo y los ids de Shopify para poder devolver el stock si se cancela.
+      tipo: producto.tipo, shopifyVariantId: producto.shopifyVariantId || null, inventoryItemId: producto.inventoryItemId || null,
     }, ...prev]);
 
     let nuevoStock = null;
@@ -239,6 +257,43 @@ export default function App() {
       shopifyError: shopifyResultado && !shopifyResultado.ok ? shopifyResultado.error : null,
     });
     setTimeout(() => setConfirmacionStock(null), 4000);
+  }
+
+  // Cancela una venta: la quita del registro y, si era un producto, devuelve la
+  // cantidad al stock en Shopify (para que el inventario quede correcto).
+  async function handleCancelarVenta(venta) {
+    const total = venta.precio * venta.cantidad;
+    if (!window.confirm(`¿Cancelar esta venta?\n${venta.cantidad} × ${venta.nombre} — Q${total}`)) return;
+
+    setSales((prev) => prev.filter((s) => s.id !== venta.id));
+
+    if (venta.tipo === "producto" && (venta.inventoryItemId || venta.shopifyVariantId)) {
+      try {
+        const response = await fetch("/api/ajustar-stock", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            inventoryItemId: venta.inventoryItemId,
+            variantId: venta.shopifyVariantId,
+            delta: venta.cantidad,
+            motivo: "cancelacion",
+          }),
+        });
+        const r = await response.json();
+        if (r.ok) {
+          if (r.stockNuevo != null) {
+            setProducts((prev) => prev.map((p) => (p.shopifyVariantId === venta.shopifyVariantId ? { ...p, stock: r.stockNuevo } : p)));
+          }
+          mostrarAviso(`Venta cancelada. Se devolvieron ${venta.cantidad} al stock de ${venta.nombre}.`);
+        } else {
+          mostrarAviso(`Venta cancelada, pero no se pudo devolver el stock: ${r.error}`, "error");
+        }
+      } catch (err) {
+        mostrarAviso("Venta cancelada. No se pudo conectar para devolver el stock.", "error");
+      }
+    } else {
+      mostrarAviso("Venta cancelada.");
+    }
   }
 
   // ---------- Pedidos (reabastecimiento) ----------
@@ -492,7 +547,12 @@ export default function App() {
                     {new Date(s.fecha).toLocaleDateString("es-GT", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
                   </p>
                 </div>
-                <span className="font-serif font-bold text-[#4B6B4F]">Q{s.precio * s.cantidad}</span>
+                <div className="flex flex-col items-end gap-1 shrink-0">
+                  <span className="font-serif font-bold text-[#4B6B4F]">Q{s.precio * s.cantidad}</span>
+                  <button onClick={() => handleCancelarVenta(s)} className="flex items-center gap-1 text-xs text-[#A6402F] hover:underline">
+                    <X className="w-3 h-3" /> Cancelar
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -977,6 +1037,7 @@ function ProductForm({ title, initial, onClose, onSubmit }) {
 
 function SellForm({ target, onClose, onSubmit }) {
   const [form, setForm] = useState({ cantidad: 1, metodoPago: target.metodoPago });
+  const [enviando, setEnviando] = useState(false);
 
   return (
     <Modal title={`Registrar venta: ${target.nombre}`} onClose={onClose}>
@@ -1006,8 +1067,9 @@ function SellForm({ target, onClose, onSubmit }) {
           <span className="text-[#2F4A33]">Total</span>
           <span className="font-serif font-bold text-[#4B6B4F]">Q{(target.precio * (Number(form.cantidad) || 1)).toFixed(2)}</span>
         </div>
-        <button onClick={() => onSubmit(form)} className="w-full bg-[#4B6B4F] text-white py-2.5 rounded-lg font-medium text-sm">
-          Confirmar venta
+        <button onClick={() => { if (enviando) return; setEnviando(true); onSubmit(form); }} disabled={enviando}
+          className="w-full bg-[#4B6B4F] text-white py-2.5 rounded-lg font-medium text-sm disabled:opacity-50">
+          {enviando ? "Guardando..." : "Confirmar venta"}
         </button>
       </div>
     </Modal>
