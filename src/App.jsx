@@ -198,6 +198,18 @@ export default function App() {
     setTimeout(() => setAviso(null), 4500);
   }
 
+  // Envía una venta o cancelación al registro seguro (Google Sheets) sin bloquear
+  // la app: si falla, la venta igual queda guardada en el teléfono.
+  function enviarAlRegistro(evento) {
+    try {
+      fetch("/api/registro", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(evento),
+      }).catch(() => {});
+    } catch (err) {}
+  }
+
   const filtered = products.filter((p) => p.nombre.toLowerCase().includes(query.toLowerCase()));
 
   function handleAddProduct(form) {
@@ -219,12 +231,23 @@ export default function App() {
   async function handleSell(form) {
     const cantidad = Number(form.cantidad) || 1;
     const producto = sellTarget;
-    setSales((prev) => [{
+    // Precio de esta venta: puede editarse a mano (precio especial). Si queda
+    // vacío, usamos el precio normal del producto. El inventario se descuenta
+    // igual, sin importar el precio.
+    const precio = form.precio !== "" && form.precio != null ? Number(form.precio) : producto.precio;
+    const vendedor = (form.vendedor || "").trim();
+    // Recordamos quién atendió, para no volver a escribirlo cada vez.
+    try { if (vendedor) localStorage.setItem("vendedor_clinica", vendedor); } catch (err) {}
+
+    const venta = {
       id: Date.now(), productoId: producto.id, nombre: producto.nombre, cantidad,
-      precio: producto.precio, metodoPago: form.metodoPago, canal: "Presencial", fecha: new Date().toISOString(),
+      precio, metodoPago: form.metodoPago, canal: "Presencial", fecha: new Date().toISOString(), vendedor,
       // Guardamos el tipo y los ids de Shopify para poder devolver el stock si se cancela.
       tipo: producto.tipo, shopifyVariantId: producto.shopifyVariantId || null, inventoryItemId: producto.inventoryItemId || null,
-    }, ...prev]);
+    };
+    setSales((prev) => [venta, ...prev]);
+    // Manda la venta al registro seguro (Google Sheets).
+    enviarAlRegistro({ accion: "venta", ...venta, total: precio * cantidad });
 
     let nuevoStock = null;
     let shopifyResultado = null;
@@ -252,7 +275,7 @@ export default function App() {
       tipo: producto.tipo,
       stock: nuevoStock,
       cantidad,
-      total: producto.precio * cantidad,
+      total: precio * cantidad,
       shopifyOk: shopifyResultado ? shopifyResultado.ok : null,
       shopifyError: shopifyResultado && !shopifyResultado.ok ? shopifyResultado.error : null,
     });
@@ -266,6 +289,8 @@ export default function App() {
     if (!window.confirm(`¿Cancelar esta venta?\n${venta.cantidad} × ${venta.nombre} — Q${total}`)) return;
 
     setSales((prev) => prev.filter((s) => s.id !== venta.id));
+    // Deja constancia de la cancelación en el registro seguro (Google Sheets).
+    enviarAlRegistro({ accion: "cancelacion", ...venta, total });
 
     if (venta.tipo === "producto" && (venta.inventoryItemId || venta.shopifyVariantId)) {
       try {
@@ -541,7 +566,7 @@ export default function App() {
                   </div>
                   <p className="text-xs text-[#8A8368] mt-0.5 flex items-center gap-1">
                     <MetodoIcon metodo={s.metodoPago} className="w-3.5 h-3.5" />
-                    {s.cantidad} × Q{s.precio} · {s.metodoPago}
+                    {s.cantidad} × Q{s.precio} · {s.metodoPago}{s.vendedor ? ` · ${s.vendedor}` : ""}
                   </p>
                   <p className="text-xs text-[#8A8368]">
                     {new Date(s.fecha).toLocaleDateString("es-GT", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
@@ -588,7 +613,7 @@ export default function App() {
                           {new Date(v.fecha).toLocaleTimeString("es-GT", { hour: "2-digit", minute: "2-digit" })} · {v.nombre}
                           <span className={`ml-2 text-xs ${v.canal === "En línea" ? "text-[#6B4E71]" : "text-[#4B6B4F]"}`}>({v.canal})</span>
                         </span>
-                        <span className="text-[#8A8368]">{v.cantidad} × Q{v.precio} · {v.metodoPago}</span>
+                        <span className="text-[#8A8368]">{v.cantidad} × Q{v.precio} · {v.metodoPago}{v.vendedor ? ` · ${v.vendedor}` : ""}</span>
                       </div>
                     ))}
                   </div>
@@ -1036,12 +1061,24 @@ function ProductForm({ title, initial, onClose, onSubmit }) {
 }
 
 function SellForm({ target, onClose, onSubmit }) {
-  const [form, setForm] = useState({ cantidad: 1, metodoPago: target.metodoPago });
+  const vendedorGuardado = (() => { try { return localStorage.getItem("vendedor_clinica") || ""; } catch (err) { return ""; } })();
+  const [form, setForm] = useState({ cantidad: 1, metodoPago: target.metodoPago, precio: String(target.precio), vendedor: vendedorGuardado });
   const [enviando, setEnviando] = useState(false);
+
+  const precioUnit = form.precio !== "" ? Number(form.precio) : target.precio;
+  const total = (precioUnit || 0) * (Number(form.cantidad) || 1);
+  const precioEspecial = Number(form.precio) !== target.precio;
+  const puedeGuardar = form.vendedor.trim() !== "" && Number(form.cantidad) > 0 && !enviando;
 
   return (
     <Modal title={`Registrar venta: ${target.nombre}`} onClose={onClose}>
       <div className="space-y-3">
+        <label className="block">
+          <span className="text-xs font-medium text-[#2F4A33]">Atendido por</span>
+          <input type="text" value={form.vendedor} onChange={(e) => setForm((f) => ({ ...f, vendedor: e.target.value }))} autoFocus
+            className="w-full mt-1 bg-white border border-[#E4DFCE] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#4B6B4F]/30"
+            placeholder="Nombre de la persona" />
+        </label>
         {target.tipo === "producto" && (
           <label className="block">
             <span className="text-xs font-medium text-[#2F4A33]">Cantidad vendida</span>
@@ -1051,6 +1088,14 @@ function SellForm({ target, onClose, onSubmit }) {
             <span className="text-xs text-[#8A8368]">Disponible: {target.stock}</span>
           </label>
         )}
+        <label className="block">
+          <span className="text-xs font-medium text-[#2F4A33]">Precio unitario (Q)</span>
+          <input type="number" min="0" value={form.precio} onChange={(e) => setForm((f) => ({ ...f, precio: e.target.value }))}
+            className="w-full mt-1 bg-white border border-[#E4DFCE] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#4B6B4F]/30" />
+          <span className="text-xs text-[#8A8368]">
+            Precio normal: Q{target.precio}.{precioEspecial ? " Estás usando un precio especial." : " Puedes cambiarlo si hay precio especial."}
+          </span>
+        </label>
         <label className="block">
           <span className="text-xs font-medium text-[#2F4A33]">Método de pago</span>
           <div className="flex gap-2 mt-1">
@@ -1065,9 +1110,9 @@ function SellForm({ target, onClose, onSubmit }) {
         </label>
         <div className="bg-[#F7F4EC] rounded-lg p-3 flex justify-between text-sm">
           <span className="text-[#2F4A33]">Total</span>
-          <span className="font-serif font-bold text-[#4B6B4F]">Q{(target.precio * (Number(form.cantidad) || 1)).toFixed(2)}</span>
+          <span className="font-serif font-bold text-[#4B6B4F]">Q{total.toFixed(2)}</span>
         </div>
-        <button onClick={() => { if (enviando) return; setEnviando(true); onSubmit(form); }} disabled={enviando}
+        <button onClick={() => { if (!puedeGuardar) return; setEnviando(true); onSubmit(form); }} disabled={!puedeGuardar}
           className="w-full bg-[#4B6B4F] text-white py-2.5 rounded-lg font-medium text-sm disabled:opacity-50">
           {enviando ? "Guardando..." : "Confirmar venta"}
         </button>
