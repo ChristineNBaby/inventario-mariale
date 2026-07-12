@@ -13,7 +13,11 @@ export default async function handler(req, res) {
     return;
   }
 
-  const url = process.env.REGISTRO_WEBHOOK_URL;
+  // La URL del webhook de Google Apps Script. Vive solo en el servidor (este
+  // archivo nunca se envía al navegador). Se puede sobreescribir con la variable
+  // de entorno REGISTRO_WEBHOOK_URL sin tocar el código.
+  const WEBHOOK_POR_DEFECTO = "https://script.google.com/macros/s/AKfycbzjurMG_LjIxrkyQTSpDKUmaIJr9Iak7TARDrKJzDfR9mR3wnt8Rl6ipLhO0aJ1oh6k/exec";
+  const url = process.env.REGISTRO_WEBHOOK_URL || WEBHOOK_POR_DEFECTO;
   if (!url) {
     res.status(200).json({ ok: false, error: "El registro de ventas todavía no está configurado (falta REGISTRO_WEBHOOK_URL en el servidor)." });
     return;
