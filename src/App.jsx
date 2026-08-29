@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from "react";
-import { Plus, Package, Receipt, Search, X, Camera, TrendingDown, DollarSign, RefreshCw, CreditCard, Banknote, Landmark, Calendar, Link2, ListChecks, ShoppingCart, PackageCheck, ClipboardList, Truck, Hourglass } from "lucide-react";
+import React, { useState, useEffect, useRef } from "react";
+import { Plus, Package, Receipt, Search, X, Camera, TrendingDown, DollarSign, RefreshCw, CreditCard, Banknote, Landmark, Calendar, Link2, ListChecks, ShoppingCart, PackageCheck, ClipboardList, Truck, Hourglass, QrCode, Printer } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
 
 // ---------- Paleta Dr. Mariale Rivers ----------
 // Fondo:      #F7F4EC (crema natural)
@@ -164,6 +165,8 @@ export default function App() {
   const [recibirTarget, setRecibirTarget] = useState(null);
   const [backorderTarget, setBackorderTarget] = useState(null);
   const [aviso, setAviso] = useState(null);
+  const [showQR, setShowQR] = useState(false);
+  const qrManejado = useRef(false);
 
   // Trae el catálogo real y actualizado desde Shopify (productos, stock y estado
   // de pedidos). Si falla (sin conexión, Shopify no configurado, etc.), se queda
@@ -185,6 +188,23 @@ export default function App() {
   useEffect(() => {
     cargarProductos();
   }, []);
+
+  // Si la app se abre desde un código QR (…?vender=IDVARIANTE), abre directo la
+  // pantalla de "Registrar venta" de ese producto una vez que cargó el catálogo.
+  useEffect(() => {
+    if (qrManejado.current || cargandoProductos) return;
+    const params = new URLSearchParams(window.location.search);
+    const venderId = params.get("vender");
+    if (!venderId) return;
+    const prod = products.find((p) => p.shopifyVariantId && p.shopifyVariantId.split("/").pop() === venderId);
+    if (prod) {
+      qrManejado.current = true;
+      setTab("inventario");
+      setSellTarget(prod);
+      // Limpia el parámetro de la URL para que no se reabra al recargar.
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, [products, cargandoProductos]);
 
   // Cada vez que cambian las ventas, las guarda en el teléfono.
   useEffect(() => {
@@ -491,6 +511,13 @@ export default function App() {
               {shopifySynced ? "Shopify conectado" : "Shopify no conectado"}
             </span>
           </button>
+          <button
+            onClick={() => setShowQR(true)}
+            className="flex items-center gap-1.5 text-xs bg-white border border-[#E4DFCE] px-2.5 py-1 rounded-full"
+          >
+            <QrCode className="w-3.5 h-3.5 text-[#6B4E71]" />
+            <span className="text-[#2F4A33]">Códigos QR</span>
+          </button>
         </div>
       </header>
 
@@ -664,6 +691,7 @@ export default function App() {
       {editTarget && <ProductForm title="Editar" initial={editTarget} onClose={() => setEditTarget(null)} onSubmit={handleEditProduct} />}
       {sellTarget && <SellForm target={sellTarget} onClose={() => setSellTarget(null)} onSubmit={handleSell} />}
       {showResumen && <ResumenInventario products={products} onClose={() => setShowResumen(false)} />}
+      {showQR && <HojaQR products={products} onClose={() => setShowQR(false)} />}
       {pedidoTarget && <PedidoForm target={pedidoTarget} onClose={() => setPedidoTarget(null)} onSubmit={handleMarcarPedido} />}
       {recibirTarget && <RecibirForm target={recibirTarget} onClose={() => setRecibirTarget(null)} onSubmit={handleRecibir} />}
       {backorderTarget && <BackorderForm target={backorderTarget} onClose={() => setBackorderTarget(null)} onSubmit={handleBackorder} />}
@@ -1057,6 +1085,53 @@ function ProductForm({ title, initial, onClose, onSubmit }) {
         </button>
       </div>
     </Modal>
+  );
+}
+
+// Hoja imprimible de códigos QR: uno por producto. Al escanear un QR con la
+// cámara del celular, se abre la app directo en "Registrar venta" de ese producto.
+function HojaQR({ products, onClose }) {
+  const productos = products.filter((p) => p.tipo === "producto" && p.shopifyVariantId);
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  return (
+    <div className="qr-overlay fixed inset-0 bg-white z-50 overflow-y-auto">
+      <style>{`
+        @media print {
+          body * { visibility: hidden !important; }
+          .qr-hoja, .qr-hoja * { visibility: visible !important; }
+          .qr-hoja { position: absolute; left: 0; top: 0; width: 100%; }
+          .no-print { display: none !important; }
+        }
+      `}</style>
+      <div className="no-print sticky top-0 bg-[#F7F4EC] border-b border-[#E4DFCE] px-5 py-3 flex items-center justify-between gap-3">
+        <div>
+          <h2 className="font-serif text-lg font-bold text-[#2F4A33]">Códigos QR de productos</h2>
+          <p className="text-xs text-[#8A8368] max-w-md">Imprime, recorta y pega cada QR en su producto. Al escanearlo con la cámara del celular se abre la venta.</p>
+        </div>
+        <div className="flex gap-2 shrink-0">
+          <button onClick={() => window.print()} className="flex items-center gap-1.5 text-sm font-medium bg-[#4B6B4F] text-white px-3 py-2 rounded-lg hover:bg-[#3A5540] transition">
+            <Printer className="w-4 h-4" /> Imprimir
+          </button>
+          <button onClick={onClose} className="text-sm font-medium border border-[#E4DFCE] text-[#2F4A33] px-3 py-2 rounded-lg">Cerrar</button>
+        </div>
+      </div>
+      <div className="qr-hoja px-5 py-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+          {productos.map((p) => {
+            const numericId = p.shopifyVariantId.split("/").pop();
+            const url = `${origin}/?vender=${numericId}`;
+            return (
+              <div key={p.id} className="border border-[#E4DFCE] rounded-xl p-3 flex flex-col items-center text-center" style={{ breakInside: "avoid" }}>
+                <QRCodeSVG value={url} size={128} level="M" />
+                <p className="text-xs font-medium text-[#2F4A33] mt-2 leading-snug">{p.nombre}</p>
+                <p className="text-xs text-[#8A8368]">Q{p.precio}</p>
+              </div>
+            );
+          })}
+        </div>
+        {productos.length === 0 && <p className="text-sm text-[#8A8368] text-center py-8">No hay productos con inventario para generar códigos QR.</p>}
+      </div>
+    </div>
   );
 }
 
