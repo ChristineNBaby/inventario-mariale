@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Plus, Package, Receipt, Search, X, Camera, TrendingDown, DollarSign, RefreshCw, CreditCard, Banknote, Landmark, Calendar, Link2, ListChecks, ShoppingCart, PackageCheck, ClipboardList, Truck, Hourglass, QrCode, Printer } from "lucide-react";
+import { Plus, Package, Receipt, Search, X, Camera, TrendingDown, DollarSign, RefreshCw, CreditCard, Banknote, Landmark, Calendar, Link2, ListChecks, ShoppingCart, PackageCheck, ClipboardList, Truck, Hourglass, QrCode, Printer, ScanLine, Users } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 
 // ---------- Paleta Dr. Mariale Rivers ----------
@@ -166,6 +166,8 @@ export default function App() {
   const [backorderTarget, setBackorderTarget] = useState(null);
   const [aviso, setAviso] = useState(null);
   const [showQR, setShowQR] = useState(false);
+  const [showScanner, setShowScanner] = useState(false);
+  const [reporteVista, setReporteVista] = useState("dia");
   const qrManejado = useRef(false);
 
   // Trae el catálogo real y actualizado desde Shopify (productos, stock y estado
@@ -216,6 +218,31 @@ export default function App() {
   function mostrarAviso(texto, tono = "ok") {
     setAviso({ texto, tono });
     setTimeout(() => setAviso(null), 4500);
+  }
+
+  // El escáner leyó un código QR. El QR trae la dirección del producto
+  // (…?vender=IDVARIANTE). Sacamos ese id, buscamos el producto en el
+  // inventario y abrimos directo la pantalla de "Registrar venta".
+  function handleScan(textoLeido) {
+    let venderId = null;
+    try {
+      venderId = new URL(textoLeido).searchParams.get("vender");
+    } catch (err) {
+      const m = textoLeido.match(/vender=(\d+)/) || textoLeido.match(/(\d{6,})/);
+      if (m) venderId = m[1];
+    }
+    if (!venderId) {
+      mostrarAviso("Ese código no es de un producto.", "error");
+      return;
+    }
+    const prod = products.find((p) => p.shopifyVariantId && p.shopifyVariantId.split("/").pop() === venderId);
+    setShowScanner(false);
+    if (prod) {
+      setTab("inventario");
+      setSellTarget(prod);
+    } else {
+      mostrarAviso("No encontré ese producto en el inventario.", "error");
+    }
   }
 
   // Envía una venta o cancelación al registro seguro (Google Sheets) sin bloquear
@@ -486,6 +513,21 @@ export default function App() {
   const totalPresencial = sales.filter((s) => s.canal === "Presencial").reduce((s2, v) => s2 + v.precio * v.cantidad, 0);
   const totalEnLinea = sales.filter((s) => s.canal === "En línea").reduce((s2, v) => s2 + v.precio * v.cantidad, 0);
 
+  // Reporte agrupado por persona que atendió (para ver el total a cobrar de cada
+  // quien). Las ventas sin nombre se juntan bajo "Sin nombre".
+  const porPersona = sales.reduce((acc, s) => {
+    const persona = (s.vendedor || "").trim() || "Sin nombre";
+    if (!acc[persona]) acc[persona] = [];
+    acc[persona].push(s);
+    return acc;
+  }, {});
+  // Ordenamos las personas de mayor a menor total a cobrar.
+  const personasOrdenadas = Object.entries(porPersona).sort(
+    (a, b) =>
+      b[1].reduce((s, v) => s + v.precio * v.cantidad, 0) -
+      a[1].reduce((s, v) => s + v.precio * v.cantidad, 0)
+  );
+
   return (
     <div className="min-h-screen bg-[#F7F4EC] font-sans text-[#2F4A33]">
       <header className="px-5 pt-6 pb-4 border-b border-[#E4DFCE] bg-[#F7F4EC] sticky top-0 z-10">
@@ -503,8 +545,15 @@ export default function App() {
             </div>
           )}
           <button
+            onClick={() => setShowScanner(true)}
+            className="flex items-center gap-1.5 text-xs font-semibold bg-[#4B6B4F] text-white px-3 py-1.5 rounded-full shadow-sm hover:bg-[#3A5540] transition ml-auto"
+          >
+            <ScanLine className="w-3.5 h-3.5" />
+            <span>Escanear</span>
+          </button>
+          <button
             onClick={() => setShopifySynced((s) => !s)}
-            className="flex items-center gap-1.5 text-xs bg-white border border-[#E4DFCE] px-2.5 py-1 rounded-full ml-auto"
+            className="flex items-center gap-1.5 text-xs bg-white border border-[#E4DFCE] px-2.5 py-1 rounded-full"
           >
             <Link2 className="w-3.5 h-3.5 text-[#6B4E71]" />
             <span className={shopifySynced ? "text-[#4B6B4F]" : "text-[#8A8368]"}>
@@ -612,7 +661,7 @@ export default function App() {
 
         {tab === "reporte" && (
           <div className="space-y-5">
-            {Object.keys(porDia).length > 0 && (
+            {sales.length > 0 && (
               <div className="grid grid-cols-2 gap-3">
                 <div className="bg-white rounded-xl border border-[#E4DFCE] p-3">
                   <p className="text-xs text-[#8A8368]">Presencial</p>
@@ -624,8 +673,25 @@ export default function App() {
                 </div>
               </div>
             )}
-            {Object.keys(porDia).length === 0 && <p className="text-sm text-[#8A8368] text-center py-8">Aún no hay ventas para reportar.</p>}
-            {Object.entries(porDia).map(([dia, ventasDia]) => {
+
+            {/* Selector de vista: por día o por persona */}
+            {sales.length > 0 && (
+              <div className="flex gap-2">
+                <button onClick={() => setReporteVista("dia")}
+                  className={`flex-1 flex items-center justify-center gap-1.5 text-sm font-medium py-2 rounded-lg border transition ${reporteVista === "dia" ? "bg-[#4B6B4F] text-white border-[#4B6B4F]" : "bg-white text-[#2F4A33] border-[#E4DFCE]"}`}>
+                  <Calendar className="w-4 h-4" /> Por día
+                </button>
+                <button onClick={() => setReporteVista("persona")}
+                  className={`flex-1 flex items-center justify-center gap-1.5 text-sm font-medium py-2 rounded-lg border transition ${reporteVista === "persona" ? "bg-[#4B6B4F] text-white border-[#4B6B4F]" : "bg-white text-[#2F4A33] border-[#E4DFCE]"}`}>
+                  <Users className="w-4 h-4" /> Por persona
+                </button>
+              </div>
+            )}
+
+            {sales.length === 0 && <p className="text-sm text-[#8A8368] text-center py-8">Aún no hay ventas para reportar.</p>}
+
+            {/* Vista por día */}
+            {reporteVista === "dia" && Object.entries(porDia).map(([dia, ventasDia]) => {
               const totalDia = ventasDia.reduce((s, v) => s + v.precio * v.cantidad, 0);
               return (
                 <div key={dia} className="bg-white rounded-2xl border border-[#E4DFCE] p-4">
@@ -641,6 +707,41 @@ export default function App() {
                           <span className={`ml-2 text-xs ${v.canal === "En línea" ? "text-[#6B4E71]" : "text-[#4B6B4F]"}`}>({v.canal})</span>
                         </span>
                         <span className="text-[#8A8368]">{v.cantidad} × Q{v.precio} · {v.metodoPago}{v.vendedor ? ` · ${v.vendedor}` : ""}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+
+            {/* Vista por persona: total a cobrar de cada quien */}
+            {reporteVista === "persona" && personasOrdenadas.map(([persona, ventasPersona]) => {
+              const totalPersona = ventasPersona.reduce((s, v) => s + v.precio * v.cantidad, 0);
+              const unidades = ventasPersona.reduce((s, v) => s + v.cantidad, 0);
+              return (
+                <div key={persona} className="bg-white rounded-2xl border border-[#E4DFCE] p-4">
+                  <div className="flex justify-between items-start mb-2">
+                    <div className="flex items-center gap-2">
+                      <div className="w-9 h-9 rounded-full bg-[#F0EDE1] flex items-center justify-center shrink-0">
+                        <Users className="w-4 h-4 text-[#6B4E71]" />
+                      </div>
+                      <div>
+                        <h3 className="font-serif font-bold text-[#2F4A33] leading-tight">{persona}</h3>
+                        <p className="text-xs text-[#8A8368]">{ventasPersona.length} {ventasPersona.length === 1 ? "venta" : "ventas"} · {unidades} {unidades === 1 ? "unidad" : "unidades"}</p>
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className="text-xs text-[#8A8368]">Total a cobrar</p>
+                      <span className="font-serif font-bold text-lg text-[#4B6B4F]">Q{totalPersona}</span>
+                    </div>
+                  </div>
+                  <div className="divide-y divide-[#E4DFCE]">
+                    {ventasPersona.map((v) => (
+                      <div key={v.id} className="flex justify-between py-1.5 text-sm">
+                        <span className="text-[#2F4A33]">
+                          {new Date(v.fecha).toLocaleDateString("es-GT", { day: "numeric", month: "short" })} · {v.nombre}
+                        </span>
+                        <span className="text-[#8A8368]">{v.cantidad} × Q{v.precio} · {v.metodoPago}</span>
                       </div>
                     ))}
                   </div>
@@ -692,6 +793,7 @@ export default function App() {
       {sellTarget && <SellForm target={sellTarget} onClose={() => setSellTarget(null)} onSubmit={handleSell} />}
       {showResumen && <ResumenInventario products={products} onClose={() => setShowResumen(false)} />}
       {showQR && <HojaQR products={products} onClose={() => setShowQR(false)} />}
+      {showScanner && <ScannerModal onScan={handleScan} onClose={() => setShowScanner(false)} />}
       {pedidoTarget && <PedidoForm target={pedidoTarget} onClose={() => setPedidoTarget(null)} onSubmit={handleMarcarPedido} />}
       {recibirTarget && <RecibirForm target={recibirTarget} onClose={() => setRecibirTarget(null)} onSubmit={handleRecibir} />}
       {backorderTarget && <BackorderForm target={backorderTarget} onClose={() => setBackorderTarget(null)} onSubmit={handleBackorder} />}
@@ -1130,6 +1232,89 @@ function HojaQR({ products, onClose }) {
           })}
         </div>
         {productos.length === 0 && <p className="text-sm text-[#8A8368] text-center py-8">No hay productos con inventario para generar códigos QR.</p>}
+      </div>
+    </div>
+  );
+}
+
+// Escáner de códigos QR usando la cámara del celular/iPad, DENTRO de la app.
+// Al leer un QR de producto (…?vender=IDVARIANTE) llama a onScan, que abre la
+// venta. La librería html5-qrcode se carga solo cuando se abre el escáner.
+function ScannerModal({ onScan, onClose }) {
+  const [error, setError] = useState(null);
+  const [listo, setListo] = useState(false);
+  const yaLeido = useRef(false);
+
+  useEffect(() => {
+    let scanner;
+    let cancelado = false;
+    import("html5-qrcode")
+      .then(({ Html5Qrcode }) => {
+        if (cancelado) return;
+        scanner = new Html5Qrcode("qr-reader-region", { verbose: false });
+        return scanner
+          .start(
+            { facingMode: "environment" },
+            { fps: 10, qrbox: { width: 240, height: 240 } },
+            (texto) => {
+              if (yaLeido.current) return;
+              yaLeido.current = true;
+              onScan(texto);
+            },
+            () => {}
+          )
+          .then(() => { if (!cancelado) setListo(true); });
+      })
+      .catch(() => {
+        if (!cancelado) setError("No pude abrir la cámara. Revisa que le hayas dado permiso de cámara a la app.");
+      });
+
+    return () => {
+      cancelado = true;
+      // Al cerrar, apagamos la cámara. Si el escáner nunca llegó a encender
+      // (permiso denegado), stop() puede lanzar error: lo envolvemos para que
+      // nunca tumbe la app.
+      if (scanner) {
+        try {
+          const estado = scanner.getState ? scanner.getState() : 0;
+          if (estado === 2) {
+            scanner.stop().then(() => { try { scanner.clear(); } catch (e) {} }).catch(() => {});
+          } else {
+            try { scanner.clear(); } catch (e) {}
+          }
+        } catch (e) {}
+      }
+    };
+  }, []);
+
+  return (
+    <div className="fixed inset-0 bg-black z-50 flex flex-col">
+      <div className="bg-[#2F4A33] text-white px-5 py-3 flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-2">
+          <ScanLine className="w-5 h-5" />
+          <span className="font-serif text-lg font-bold">Escanear producto</span>
+        </div>
+        <button onClick={onClose} className="p-1 rounded-full hover:bg-white/10">
+          <X className="w-6 h-6" />
+        </button>
+      </div>
+
+      <div className="flex-1 flex flex-col items-center justify-center p-4 gap-4">
+        <div id="qr-reader-region" className="w-full max-w-sm rounded-2xl overflow-hidden bg-black" />
+        {!listo && !error && (
+          <p className="text-white/80 text-sm text-center">Preparando la cámara…</p>
+        )}
+        {listo && !error && (
+          <p className="text-white/90 text-sm text-center max-w-xs">
+            Apunta la cámara al código QR del producto. Se abre la venta solita. 📷
+          </p>
+        )}
+        {error && (
+          <div className="bg-white rounded-xl p-4 max-w-xs text-center">
+            <p className="text-sm text-[#A6402F]">{error}</p>
+            <button onClick={onClose} className="mt-3 text-sm font-medium text-[#4B6B4F]">Cerrar</button>
+          </div>
+        )}
       </div>
     </div>
   );
