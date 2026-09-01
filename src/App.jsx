@@ -189,6 +189,7 @@ export default function App() {
 
   useEffect(() => {
     cargarProductos();
+    cargarVentasCompartidas();
   }, []);
 
   // Si la app se abre desde un código QR (…?vender=IDVARIANTE), abre directo la
@@ -257,6 +258,40 @@ export default function App() {
     } catch (err) {}
   }
 
+  // Guarda o quita una venta del cajón COMPARTIDO en Shopify, para que todos los
+  // aparatos de la clínica vean el mismo reporte. Best-effort: si falla (sin
+  // conexión), la venta igual queda en el teléfono y se reintenta al recargar.
+  function guardarVentaCompartida(accion, datos) {
+    try {
+      fetch("/api/ventas", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accion, ...datos }),
+      }).catch(() => {});
+    } catch (err) {}
+  }
+
+  // Al abrir la app, trae las ventas de la semana desde el cajón compartido y las
+  // combina con las que haya en este teléfono (por si alguna se hizo sin
+  // conexión). Las que solo están aquí, las sube al cajón compartido.
+  function cargarVentasCompartidas() {
+    fetch("/api/ventas")
+      .then((r) => r.json())
+      .then((data) => {
+        if (!data.ok || !Array.isArray(data.ventas)) return;
+        setSales((locales) => {
+          const idsRemotos = new Set(data.ventas.map((v) => v.id));
+          const soloLocales = locales.filter((v) => !idsRemotos.has(v.id));
+          // Sube al cajón compartido las ventas que solo existían en este aparato.
+          soloLocales.forEach((v) => guardarVentaCompartida("agregar", { venta: v }));
+          const combinadas = [...data.ventas, ...soloLocales];
+          combinadas.sort((a, b) => Date.parse(b.fecha) - Date.parse(a.fecha));
+          return combinadas;
+        });
+      })
+      .catch(() => {});
+  }
+
   const filtered = products.filter((p) => p.nombre.toLowerCase().includes(query.toLowerCase()));
 
   function handleAddProduct(form) {
@@ -293,8 +328,10 @@ export default function App() {
       tipo: producto.tipo, shopifyVariantId: producto.shopifyVariantId || null, inventoryItemId: producto.inventoryItemId || null,
     };
     setSales((prev) => [venta, ...prev]);
-    // Manda la venta al registro seguro (Google Sheets).
+    // Manda la venta al registro seguro (Google Sheets, historial permanente).
     enviarAlRegistro({ accion: "venta", ...venta, total: precio * cantidad });
+    // Y al cajón compartido en Shopify, para que todos los aparatos la vean.
+    guardarVentaCompartida("agregar", { venta });
 
     let nuevoStock = null;
     let shopifyResultado = null;
@@ -338,6 +375,8 @@ export default function App() {
     setSales((prev) => prev.filter((s) => s.id !== venta.id));
     // Deja constancia de la cancelación en el registro seguro (Google Sheets).
     enviarAlRegistro({ accion: "cancelacion", ...venta, total });
+    // Quita la venta del cajón compartido en Shopify (todos los aparatos).
+    guardarVentaCompartida("cancelar", { id: venta.id });
 
     if (venta.tipo === "producto" && (venta.inventoryItemId || venta.shopifyVariantId)) {
       try {
