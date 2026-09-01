@@ -1,62 +1,91 @@
-// Registro COMPARTIDO de ventas de la semana. Vive en un metafield privado de la
-// app EN SHOPIFY (owner = la propia instalación de la app, namespace "inventario",
-// key "ventas"), así:
+// Registro COMPARTIDO y PERMANENTE de ventas. Vive en metafields privados de la
+// app EN SHOPIFY (owner = la propia instalación de la app, namespace "inventario"),
+// así:
 //   - todos los iPads/celulares de la clínica ven el MISMO reporte,
-//   - queda guardado permanentemente en Shopify (no se pierde al cerrar la app),
-//   - solo se conservan los últimos 7 días (se limpia solo).
+//   - queda guardado permanentemente en Shopify (no se pierde, NO se borra),
+//   - se conserva TODO el historial.
+//
+// Para que quepa todo sin toparse con el límite de tamaño de un metafield, las
+// ventas se guardan en UNA BOLSA POR MES: key "ventas_AAAA-MM" (ej "ventas_2026-09").
+// Cada mes es una lista pequeña; se pueden acumular años de meses sin problema.
 //
 // Métodos:
-//   GET                      -> devuelve { ok, ventas: [...] } con la última semana
-//   POST { accion:"agregar", venta }   -> añade una venta
-//   POST { accion:"cancelar", id }     -> quita una venta por id
+//   GET                                -> { ok, ventas: [...] } con TODO el historial
+//   POST { accion:"agregar", venta }   -> añade una venta a la bolsa de su mes
+//   POST { accion:"cancelar", id }     -> quita una venta por id (busca en todos los meses)
 //
-// La app además sigue guardando cada venta en el teléfono (respaldo sin conexión)
-// y en la hoja de Google (historial permanente completo).
+// La app además guarda cada venta en el teléfono (respaldo sin conexión) y en la
+// hoja de Google (historial permanente completo, aparte).
 import { leerConfig, shopifyGraphql } from "./_shopify.js";
 
 const NAMESPACE = "inventario";
-const KEY = "ventas";
-const DIAS_A_CONSERVAR = 7;
+const PREFIJO = "ventas_"; // las keys de las bolsas mensuales empiezan así
 
-// Solo deja las ventas de los últimos N días.
-function soloUltimaSemana(ventas) {
-  const limite = Date.now() - DIAS_A_CONSERVAR * 24 * 60 * 60 * 1000;
-  return ventas.filter((v) => {
-    const t = Date.parse(v.fecha);
-    return isNaN(t) ? true : t >= limite;
-  });
+// Devuelve la key de la bolsa mensual para una fecha ISO (ej "ventas_2026-09").
+function keyDelMes(fechaIso) {
+  const d = fechaIso ? new Date(fechaIso) : new Date();
+  const t = isNaN(d.getTime()) ? new Date() : d;
+  const mes = String(t.getUTCMonth() + 1).padStart(2, "0");
+  return `${PREFIJO}${t.getUTCFullYear()}-${mes}`;
 }
 
-// Devuelve el id de la instalación de la app (owner de nuestro metafield privado)
-// y las ventas guardadas actualmente.
-async function leerEstado(config) {
+// Id de la instalación de la app (owner de nuestros metafields privados).
+async function leerOwnerId(config) {
+  const data = await shopifyGraphql(config, `query { currentAppInstallation { id } }`, {});
+  return data?.currentAppInstallation?.id || null;
+}
+
+// Lee TODAS las bolsas mensuales (keys "ventas_*") y devuelve un mapa
+// { key -> [ventas] } además de la lista combinada.
+async function leerTodasLasBolsas(config) {
   const data = await shopifyGraphql(
     config,
     `query {
       currentAppInstallation {
-        id
-        metafield(namespace: "${NAMESPACE}", key: "${KEY}") { value }
+        metafields(namespace: "${NAMESPACE}", first: 100) {
+          edges { node { key value } }
+        }
       }
     }`,
     {}
   );
-  const inst = data?.currentAppInstallation;
-  const ownerId = inst?.id || null;
-  let ventas = [];
-  const raw = inst?.metafield?.value;
-  if (raw) {
+  const edges = data?.currentAppInstallation?.metafields?.edges || [];
+  const bolsas = {};
+  for (const { node } of edges) {
+    if (!node.key.startsWith(PREFIJO)) continue;
     try {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) ventas = parsed;
+      const parsed = JSON.parse(node.value);
+      if (Array.isArray(parsed)) bolsas[node.key] = parsed;
     } catch (err) {
-      ventas = [];
+      bolsas[node.key] = [];
     }
   }
-  return { ownerId, ventas };
+  return bolsas;
 }
 
-// Guarda la lista completa de ventas en el metafield de la app.
-async function guardarVentas(config, ownerId, ventas) {
+// Lee una sola bolsa mensual por su key.
+async function leerBolsa(config, key) {
+  const data = await shopifyGraphql(
+    config,
+    `query {
+      currentAppInstallation {
+        metafield(namespace: "${NAMESPACE}", key: "${key}") { value }
+      }
+    }`,
+    {}
+  );
+  const raw = data?.currentAppInstallation?.metafield?.value;
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+// Guarda una bolsa mensual completa.
+async function guardarBolsa(config, ownerId, key, ventas) {
   const data = await shopifyGraphql(
     config,
     `mutation($metafields: [MetafieldsSetInput!]!) {
@@ -69,7 +98,7 @@ async function guardarVentas(config, ownerId, ventas) {
       metafields: [{
         ownerId,
         namespace: NAMESPACE,
-        key: KEY,
+        key,
         type: "json",
         value: JSON.stringify(ventas),
       }],
@@ -90,43 +119,55 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === "GET") {
-      const { ventas } = await leerEstado(config);
-      res.status(200).json({ ok: true, ventas: soloUltimaSemana(ventas) });
+      const bolsas = await leerTodasLasBolsas(config);
+      const todas = Object.values(bolsas).flat();
+      todas.sort((a, b) => Date.parse(b.fecha) - Date.parse(a.fecha));
+      res.status(200).json({ ok: true, ventas: todas });
       return;
     }
 
     if (req.method === "POST") {
       const { accion, venta, id } = req.body || {};
-      const { ownerId, ventas } = await leerEstado(config);
+      const ownerId = await leerOwnerId(config);
       if (!ownerId) {
         res.status(200).json({ ok: false, error: "No se encontró la instalación de la app en Shopify." });
         return;
       }
-
-      let nuevas = soloUltimaSemana(ventas);
 
       if (accion === "agregar") {
         if (!venta || venta.id == null) {
           res.status(400).json({ ok: false, error: "Falta la venta a agregar." });
           return;
         }
+        const key = keyDelMes(venta.fecha);
+        const bolsa = await leerBolsa(config, key);
         // Evita duplicados si el mismo aparato reintenta.
-        if (!nuevas.some((v) => v.id === venta.id)) {
-          nuevas.push(venta);
+        if (!bolsa.some((v) => v.id === venta.id)) {
+          bolsa.push(venta);
+          await guardarBolsa(config, ownerId, key, bolsa);
         }
-      } else if (accion === "cancelar") {
+        res.status(200).json({ ok: true });
+        return;
+      }
+
+      if (accion === "cancelar") {
         if (id == null) {
           res.status(400).json({ ok: false, error: "Falta el id de la venta a cancelar." });
           return;
         }
-        nuevas = nuevas.filter((v) => v.id !== id);
-      } else {
-        res.status(400).json({ ok: false, error: "Acción no válida (agregar o cancelar)." });
+        // Busca en qué bolsa mensual está esa venta y solo reescribe esa.
+        const bolsas = await leerTodasLasBolsas(config);
+        for (const [key, ventas] of Object.entries(bolsas)) {
+          if (ventas.some((v) => v.id === id)) {
+            await guardarBolsa(config, ownerId, key, ventas.filter((v) => v.id !== id));
+            break;
+          }
+        }
+        res.status(200).json({ ok: true });
         return;
       }
 
-      await guardarVentas(config, ownerId, nuevas);
-      res.status(200).json({ ok: true, ventas: nuevas });
+      res.status(400).json({ ok: false, error: "Acción no válida (agregar o cancelar)." });
       return;
     }
 
