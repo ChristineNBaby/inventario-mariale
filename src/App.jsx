@@ -114,8 +114,8 @@ function ProductCard({ p, onSell, onEdit }) {
         </div>
         <p className="text-xs text-[#8A8368] mt-1">{p.metodoPago}</p>
         <div className="flex gap-2 mt-3">
-          <button onClick={() => onSell(p)} className="text-xs font-medium bg-[#4B6B4F] text-white px-3 py-1.5 rounded-lg hover:bg-[#3A5540] transition">
-            Registrar venta
+          <button onClick={() => onSell(p)} className="text-xs font-medium bg-[#4B6B4F] text-white px-3 py-1.5 rounded-lg hover:bg-[#3A5540] transition flex items-center gap-1">
+            <Plus className="w-3.5 h-3.5" /> Agregar a la cuenta
           </button>
           <button onClick={() => onEdit(p)} className="text-xs font-medium border border-[#E4DFCE] text-[#2F4A33] px-3 py-1.5 rounded-lg hover:bg-[#F7F4EC] transition">
             Editar
@@ -155,7 +155,9 @@ export default function App() {
   const [tab, setTab] = useState("inventario");
   const [query, setQuery] = useState("");
   const [showAdd, setShowAdd] = useState(false);
-  const [sellTarget, setSellTarget] = useState(null);
+  // La "cuenta actual": los productos que un mismo cliente va a pagar juntos.
+  const [cuenta, setCuenta] = useState([]);
+  const [showCuenta, setShowCuenta] = useState(false);
   const [editTarget, setEditTarget] = useState(null);
   const [shopifySynced, setShopifySynced] = useState(false);
   const [confirmacionStock, setConfirmacionStock] = useState(null);
@@ -203,7 +205,8 @@ export default function App() {
     if (prod) {
       qrManejado.current = true;
       setTab("inventario");
-      setSellTarget(prod);
+      agregarACuenta(prod);
+      setShowCuenta(true);
       // Limpia el parámetro de la URL para que no se reabra al recargar.
       window.history.replaceState({}, "", window.location.pathname);
     }
@@ -224,6 +227,8 @@ export default function App() {
   // El escáner leyó un código QR. El QR trae la dirección del producto
   // (…?vender=IDVARIANTE). Sacamos ese id, buscamos el producto en el
   // inventario y abrimos directo la pantalla de "Registrar venta".
+  // Devuelve { ok, msg } para que el escáner muestre el resultado y siga abierto,
+  // así se pueden escanear varios productos seguidos para una misma cuenta.
   function handleScan(textoLeido) {
     let venderId = null;
     try {
@@ -233,17 +238,14 @@ export default function App() {
       if (m) venderId = m[1];
     }
     if (!venderId) {
-      mostrarAviso("Ese código no es de un producto.", "error");
-      return;
+      return { ok: false, msg: "Ese código no es de un producto." };
     }
     const prod = products.find((p) => p.shopifyVariantId && p.shopifyVariantId.split("/").pop() === venderId);
-    setShowScanner(false);
     if (prod) {
-      setTab("inventario");
-      setSellTarget(prod);
-    } else {
-      mostrarAviso("No encontré ese producto en el inventario.", "error");
+      agregarACuenta(prod);
+      return { ok: true, msg: `✓ ${prod.nombre}` };
     }
+    return { ok: false, msg: "Ese producto no está en el inventario." };
   }
 
   // Envía una venta o cancelación al registro seguro (Google Sheets) sin bloquear
@@ -310,60 +312,100 @@ export default function App() {
     setEditTarget(null);
   }
 
-  async function handleSell(form) {
-    const cantidad = Number(form.cantidad) || 1;
-    const producto = sellTarget;
-    // Precio de esta venta: puede editarse a mano (precio especial). Si queda
-    // vacío, usamos el precio normal del producto. El inventario se descuenta
-    // igual, sin importar el precio.
-    const precio = form.precio !== "" && form.precio != null ? Number(form.precio) : producto.precio;
-    const vendedor = (form.vendedor || "").trim();
-    // Recordamos quién atendió, para no volver a escribirlo cada vez.
-    try { if (vendedor) localStorage.setItem("vendedor_clinica", vendedor); } catch (err) {}
+  // Agrega un producto a la cuenta actual. Si ya está, le sube 1 a la cantidad
+  // (sin pasarse del stock disponible, para los productos físicos).
+  function agregarACuenta(producto) {
+    setCuenta((prev) => {
+      const linea = prev.find((l) => l.producto.id === producto.id);
+      if (linea) {
+        return prev.map((l) => {
+          if (l.producto.id !== producto.id) return l;
+          const tope = l.producto.tipo === "producto" ? (l.producto.stock ?? 9999) : 9999;
+          return { ...l, cantidad: Math.min(l.cantidad + 1, Math.max(1, tope)) };
+        });
+      }
+      return [...prev, { lineId: `${producto.id}-${Date.now()}`, producto, cantidad: 1, precio: producto.precio }];
+    });
+    mostrarAviso(`Agregado a la cuenta: ${producto.nombre}`);
+  }
+
+  function quitarDeCuenta(lineId) {
+    setCuenta((prev) => prev.filter((l) => l.lineId !== lineId));
+  }
+
+  function cambiarLinea(lineId, campo, valor) {
+    setCuenta((prev) => prev.map((l) => (l.lineId === lineId ? { ...l, [campo]: valor } : l)));
+  }
+
+  // Guarda una venta en el cajón compartido y ESPERA la respuesta, para poder
+  // encadenar varias ventas de una misma cuenta sin que se pisen entre sí.
+  async function guardarVentaCompartidaAsync(accion, datos) {
+    try {
+      await fetch("/api/ventas", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accion, ...datos }),
+      });
+    } catch (err) {}
+  }
+
+  // Registra UNA línea de la cuenta: la guarda, la manda a los registros y
+  // descuenta su stock en Shopify. Todas las líneas de una cuenta comparten el
+  // mismo ticketId, el mismo cliente y la misma fecha.
+  async function registrarLineaVenta(linea, meta, indice) {
+    const producto = linea.producto;
+    const cantidad = Number(linea.cantidad) || 1;
+    const precio = linea.precio !== "" && linea.precio != null ? Number(linea.precio) : producto.precio;
 
     const venta = {
-      id: Date.now(), productoId: producto.id, nombre: producto.nombre, cantidad,
-      precio, metodoPago: form.metodoPago, canal: "Presencial", fecha: new Date().toISOString(), vendedor,
-      // Guardamos el tipo y los ids de Shopify para poder devolver el stock si se cancela.
+      id: meta.ticketId * 1000 + indice, ticketId: meta.ticketId,
+      productoId: producto.id, nombre: producto.nombre, cantidad, precio,
+      metodoPago: meta.metodoPago, canal: "Presencial", fecha: meta.fecha,
+      cliente: meta.cliente,
+      // Guardamos el cliente también en "vendedor" por compatibilidad con la hoja de Google.
+      vendedor: meta.cliente,
       tipo: producto.tipo, shopifyVariantId: producto.shopifyVariantId || null, inventoryItemId: producto.inventoryItemId || null,
     };
     setSales((prev) => [venta, ...prev]);
-    // Manda la venta al registro seguro (Google Sheets, historial permanente).
     enviarAlRegistro({ accion: "venta", ...venta, total: precio * cantidad });
-    // Y al cajón compartido en Shopify, para que todos los aparatos la vean.
-    guardarVentaCompartida("agregar", { venta });
-
-    let nuevoStock = null;
-    let shopifyResultado = null;
+    await guardarVentaCompartidaAsync("agregar", { venta });
 
     if (producto.tipo === "producto") {
-      nuevoStock = Math.max(0, producto.stock - cantidad);
-      // 1. Actualiza primero en la app, para que se vea al instante sin esperar a Shopify
-      setProducts((prev) => prev.map((p) => p.id === producto.id ? { ...p, stock: nuevoStock } : p));
-
-      // 2. Intenta descontar el mismo stock en Shopify (ubicación Clínica)
+      const nuevoStock = Math.max(0, (producto.stock || 0) - cantidad);
+      setProducts((prev) => prev.map((p) => (p.id === producto.id ? { ...p, stock: nuevoStock } : p)));
       if (producto.shopifyVariantId) {
-        shopifyResultado = await descontarStockEnShopify(producto.shopifyVariantId, cantidad);
-        // Shopify devuelve el stock real después de restar — lo usamos por si
-        // otra persona movió inventario al mismo tiempo.
-        if (shopifyResultado?.ok && shopifyResultado.stockNuevo != null) {
-          nuevoStock = shopifyResultado.stockNuevo;
-          setProducts((prev) => prev.map((p) => p.id === producto.id ? { ...p, stock: shopifyResultado.stockNuevo } : p));
+        const r = await descontarStockEnShopify(producto.shopifyVariantId, cantidad);
+        if (r?.ok && r.stockNuevo != null) {
+          setProducts((prev) => prev.map((p) => (p.id === producto.id ? { ...p, stock: r.stockNuevo } : p)));
         }
       }
     }
+  }
 
-    setSellTarget(null);
-    setConfirmacionStock({
-      nombre: producto.nombre,
-      tipo: producto.tipo,
-      stock: nuevoStock,
-      cantidad,
-      total: precio * cantidad,
-      shopifyOk: shopifyResultado ? shopifyResultado.ok : null,
-      shopifyError: shopifyResultado && !shopifyResultado.ok ? shopifyResultado.error : null,
-    });
-    setTimeout(() => setConfirmacionStock(null), 4000);
+  // Cobra TODA la cuenta: registra cada producto con el mismo cliente y muestra
+  // el total cobrado. Vacía la cuenta al terminar.
+  async function handleCobrar({ metodoPago, cliente }) {
+    const lineas = cuenta;
+    if (lineas.length === 0) return;
+    const meta = {
+      ticketId: Date.now(),
+      cliente: (cliente || "").trim(),
+      metodoPago,
+      fecha: new Date().toISOString(),
+    };
+    const total = lineas.reduce((s, l) => s + (Number(l.precio) || 0) * (Number(l.cantidad) || 1), 0);
+    const numItems = lineas.reduce((s, l) => s + (Number(l.cantidad) || 1), 0);
+
+    setShowCuenta(false);
+    setCuenta([]);
+
+    // Registra las líneas una por una (en orden) para no pisar el cajón compartido.
+    for (let i = 0; i < lineas.length; i++) {
+      await registrarLineaVenta(lineas[i], meta, i);
+    }
+
+    setConfirmacionStock({ cuenta: true, cliente: meta.cliente, items: numItems, total });
+    setTimeout(() => setConfirmacionStock(null), 5000);
   }
 
   // Cancela una venta: la quita del registro y, si era un producto, devuelve la
@@ -552,19 +594,18 @@ export default function App() {
   const totalPresencial = sales.filter((s) => s.canal === "Presencial").reduce((s2, v) => s2 + v.precio * v.cantidad, 0);
   const totalEnLinea = sales.filter((s) => s.canal === "En línea").reduce((s2, v) => s2 + v.precio * v.cantidad, 0);
 
-  // Reporte agrupado por persona que atendió (para ver el total a cobrar de cada
-  // quien). Las ventas sin nombre se juntan bajo "Sin nombre".
-  const porPersona = sales.reduce((acc, s) => {
-    const persona = (s.vendedor || "").trim() || "Sin nombre";
-    if (!acc[persona]) acc[persona] = [];
-    acc[persona].push(s);
+  // Reporte agrupado por CUENTA (cada cliente que compró varios productos juntos).
+  // Las ventas de una misma cuenta comparten ticketId; las ventas viejas sin
+  // ticketId se muestran cada una como su propia cuenta.
+  const porCuenta = sales.reduce((acc, s) => {
+    const clave = s.ticketId ? `t${s.ticketId}` : `s${s.id}`;
+    if (!acc[clave]) acc[clave] = [];
+    acc[clave].push(s);
     return acc;
   }, {});
-  // Ordenamos las personas de mayor a menor total a cobrar.
-  const personasOrdenadas = Object.entries(porPersona).sort(
-    (a, b) =>
-      b[1].reduce((s, v) => s + v.precio * v.cantidad, 0) -
-      a[1].reduce((s, v) => s + v.precio * v.cantidad, 0)
+  // De más reciente a más antigua.
+  const cuentasOrdenadas = Object.values(porCuenta).sort(
+    (a, b) => Date.parse(b[0].fecha) - Date.parse(a[0].fecha)
   );
 
   return (
@@ -647,7 +688,7 @@ export default function App() {
             <div className="space-y-3">
               {cargandoProductos && <p className="text-sm text-[#8A8368] text-center py-8">Cargando productos de Shopify...</p>}
               {!cargandoProductos && filtered.length === 0 && <p className="text-sm text-[#8A8368] text-center py-8">No hay nada que coincida.</p>}
-              {filtered.map((p) => <ProductCard key={p.id} p={p} onSell={setSellTarget} onEdit={setEditTarget} />)}
+              {filtered.map((p) => <ProductCard key={p.id} p={p} onSell={agregarACuenta} onEdit={setEditTarget} />)}
             </div>
           </>
         )}
@@ -713,16 +754,16 @@ export default function App() {
               </div>
             )}
 
-            {/* Selector de vista: por día o por persona */}
+            {/* Selector de vista: por día o por cliente (cuenta) */}
             {sales.length > 0 && (
               <div className="flex gap-2">
                 <button onClick={() => setReporteVista("dia")}
                   className={`flex-1 flex items-center justify-center gap-1.5 text-sm font-medium py-2 rounded-lg border transition ${reporteVista === "dia" ? "bg-[#4B6B4F] text-white border-[#4B6B4F]" : "bg-white text-[#2F4A33] border-[#E4DFCE]"}`}>
                   <Calendar className="w-4 h-4" /> Por día
                 </button>
-                <button onClick={() => setReporteVista("persona")}
-                  className={`flex-1 flex items-center justify-center gap-1.5 text-sm font-medium py-2 rounded-lg border transition ${reporteVista === "persona" ? "bg-[#4B6B4F] text-white border-[#4B6B4F]" : "bg-white text-[#2F4A33] border-[#E4DFCE]"}`}>
-                  <Users className="w-4 h-4" /> Por persona
+                <button onClick={() => setReporteVista("cliente")}
+                  className={`flex-1 flex items-center justify-center gap-1.5 text-sm font-medium py-2 rounded-lg border transition ${reporteVista === "cliente" ? "bg-[#4B6B4F] text-white border-[#4B6B4F]" : "bg-white text-[#2F4A33] border-[#E4DFCE]"}`}>
+                  <Users className="w-4 h-4" /> Por cliente
                 </button>
               </div>
             )}
@@ -753,34 +794,37 @@ export default function App() {
               );
             })}
 
-            {/* Vista por persona: total a cobrar de cada quien */}
-            {reporteVista === "persona" && personasOrdenadas.map(([persona, ventasPersona]) => {
-              const totalPersona = ventasPersona.reduce((s, v) => s + v.precio * v.cantidad, 0);
-              const unidades = ventasPersona.reduce((s, v) => s + v.cantidad, 0);
+            {/* Vista por cliente: cada cuenta (compra de un cliente) con su TOTAL a cobrar */}
+            {reporteVista === "cliente" && cuentasOrdenadas.map((ventasCuenta) => {
+              const totalCuenta = ventasCuenta.reduce((s, v) => s + v.precio * v.cantidad, 0);
+              const unidades = ventasCuenta.reduce((s, v) => s + v.cantidad, 0);
+              const primera = ventasCuenta[0];
+              const nombreCliente = (primera.cliente || primera.vendedor || "").trim() || "Cliente";
+              const metodo = primera.metodoPago;
               return (
-                <div key={persona} className="bg-white rounded-2xl border border-[#E4DFCE] p-4">
+                <div key={primera.ticketId ? `t${primera.ticketId}` : `s${primera.id}`} className="bg-white rounded-2xl border border-[#E4DFCE] p-4">
                   <div className="flex justify-between items-start mb-2">
                     <div className="flex items-center gap-2">
                       <div className="w-9 h-9 rounded-full bg-[#F0EDE1] flex items-center justify-center shrink-0">
                         <Users className="w-4 h-4 text-[#6B4E71]" />
                       </div>
                       <div>
-                        <h3 className="font-serif font-bold text-[#2F4A33] leading-tight">{persona}</h3>
-                        <p className="text-xs text-[#8A8368]">{ventasPersona.length} {ventasPersona.length === 1 ? "venta" : "ventas"} · {unidades} {unidades === 1 ? "unidad" : "unidades"}</p>
+                        <h3 className="font-serif font-bold text-[#2F4A33] leading-tight">{nombreCliente}</h3>
+                        <p className="text-xs text-[#8A8368]">
+                          {new Date(primera.fecha).toLocaleDateString("es-GT", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })} · {unidades} {unidades === 1 ? "producto" : "productos"} · {metodo}
+                        </p>
                       </div>
                     </div>
                     <div className="text-right shrink-0">
                       <p className="text-xs text-[#8A8368]">Total a cobrar</p>
-                      <span className="font-serif font-bold text-lg text-[#4B6B4F]">Q{totalPersona}</span>
+                      <span className="font-serif font-bold text-lg text-[#4B6B4F]">Q{totalCuenta}</span>
                     </div>
                   </div>
                   <div className="divide-y divide-[#E4DFCE]">
-                    {ventasPersona.map((v) => (
+                    {ventasCuenta.map((v) => (
                       <div key={v.id} className="flex justify-between py-1.5 text-sm">
-                        <span className="text-[#2F4A33]">
-                          {new Date(v.fecha).toLocaleDateString("es-GT", { day: "numeric", month: "short" })} · {v.nombre}
-                        </span>
-                        <span className="text-[#8A8368]">{v.cantidad} × Q{v.precio} · {v.metodoPago}</span>
+                        <span className="text-[#2F4A33]">{v.nombre}</span>
+                        <span className="text-[#8A8368]">{v.cantidad} × Q{v.precio}</span>
                       </div>
                     ))}
                   </div>
@@ -796,22 +840,13 @@ export default function App() {
           <div className="flex items-center gap-2">
             <Package className="w-4 h-4 text-[#C89B3C] shrink-0" />
             <span>
-              Venta registrada: {confirmacionStock.cantidad} × {confirmacionStock.nombre}.{" "}
-              {confirmacionStock.tipo === "producto"
-                ? <strong>Stock restante: {confirmacionStock.stock}</strong>
-                : <strong>Total: Q{confirmacionStock.total}</strong>}
+              Cuenta cobrada{confirmacionStock.cliente ? ` — ${confirmacionStock.cliente}` : ""}: {confirmacionStock.items} {confirmacionStock.items === 1 ? "producto" : "productos"}.{" "}
+              <strong>Total: Q{confirmacionStock.total}</strong>
             </span>
           </div>
-          {confirmacionStock.shopifyOk === true && (
-            <p className="text-xs text-[#A8C4A2] mt-1 flex items-center gap-1">
-              <Link2 className="w-3 h-3" /> Sincronizado con Shopify
-            </p>
-          )}
-          {confirmacionStock.shopifyOk === false && (
-            <p className="text-xs text-[#E8B98A] mt-1">
-              ⚠ No se sincronizó con Shopify aún ({confirmacionStock.shopifyError}). La venta quedó guardada aquí.
-            </p>
-          )}
+          <p className="text-xs text-[#A8C4A2] mt-1 flex items-center gap-1">
+            <Link2 className="w-3 h-3" /> Inventario descontado en Shopify
+          </p>
         </div>
       )}
 
@@ -821,18 +856,36 @@ export default function App() {
         </div>
       )}
 
-      {tab === "inventario" && (
+      {/* Botón + para agregar producto nuevo al inventario: solo cuando no hay una cuenta abierta */}
+      {tab === "inventario" && cuenta.length === 0 && (
         <button onClick={() => setShowAdd(true)} className="fixed bottom-6 right-6 bg-[#4B6B4F] text-white w-14 h-14 rounded-full shadow-lg flex items-center justify-center hover:bg-[#3A5540] transition">
           <Plus className="w-6 h-6" />
         </button>
       )}
 
+      {/* Barra de la cuenta actual: aparece cuando hay productos agregados */}
+      {cuenta.length > 0 && (
+        <button
+          onClick={() => setShowCuenta(true)}
+          className="fixed bottom-4 left-4 right-4 z-40 bg-[#4B6B4F] text-white rounded-2xl shadow-xl px-5 py-3.5 flex items-center justify-between gap-3 hover:bg-[#3A5540] transition"
+        >
+          <span className="flex items-center gap-2 font-medium">
+            <ShoppingCart className="w-5 h-5" />
+            {cuenta.reduce((s, l) => s + (Number(l.cantidad) || 1), 0)} en la cuenta
+          </span>
+          <span className="flex items-center gap-2">
+            <span className="font-serif font-bold text-lg">Q{cuenta.reduce((s, l) => s + (Number(l.precio) || 0) * (Number(l.cantidad) || 1), 0)}</span>
+            <span className="bg-white/20 rounded-full px-3 py-1 text-sm font-semibold">Cobrar</span>
+          </span>
+        </button>
+      )}
+
       {showAdd && <ProductForm title="Nuevo producto o servicio" onClose={() => setShowAdd(false)} onSubmit={handleAddProduct} />}
       {editTarget && <ProductForm title="Editar" initial={editTarget} onClose={() => setEditTarget(null)} onSubmit={handleEditProduct} />}
-      {sellTarget && <SellForm target={sellTarget} onClose={() => setSellTarget(null)} onSubmit={handleSell} />}
+      {showCuenta && <CuentaModal cuenta={cuenta} onClose={() => setShowCuenta(false)} onQuitar={quitarDeCuenta} onCambiar={cambiarLinea} onCobrar={handleCobrar} />}
       {showResumen && <ResumenInventario products={products} onClose={() => setShowResumen(false)} />}
       {showQR && <HojaQR products={products} onClose={() => setShowQR(false)} />}
-      {showScanner && <ScannerModal onScan={handleScan} onClose={() => setShowScanner(false)} />}
+      {showScanner && <ScannerModal onScan={handleScan} cuenta={cuenta} onCobrar={() => { setShowScanner(false); setShowCuenta(true); }} onClose={() => setShowScanner(false)} />}
       {pedidoTarget && <PedidoForm target={pedidoTarget} onClose={() => setPedidoTarget(null)} onSubmit={handleMarcarPedido} />}
       {recibirTarget && <RecibirForm target={recibirTarget} onClose={() => setRecibirTarget(null)} onSubmit={handleRecibir} />}
       {backorderTarget && <BackorderForm target={backorderTarget} onClose={() => setBackorderTarget(null)} onSubmit={handleBackorder} />}
@@ -1279,10 +1332,15 @@ function HojaQR({ products, onClose }) {
 // Escáner de códigos QR usando la cámara del celular/iPad, DENTRO de la app.
 // Al leer un QR de producto (…?vender=IDVARIANTE) llama a onScan, que abre la
 // venta. La librería html5-qrcode se carga solo cuando se abre el escáner.
-function ScannerModal({ onScan, onClose }) {
+// Escáner que permite escanear VARIOS productos seguidos para una misma cuenta.
+// Cada lectura llama a onScan(texto) que devuelve { ok, msg }; el escáner muestra
+// ese mensaje y se re-arma solo (con una pausa corta para no leer dos veces el
+// mismo código). Abajo muestra la cuenta que se va armando y un botón "Cobrar".
+function ScannerModal({ onScan, cuenta, onCobrar, onClose }) {
   const [error, setError] = useState(null);
   const [listo, setListo] = useState(false);
-  const yaLeido = useRef(false);
+  const [flash, setFlash] = useState(null); // { ok, msg }
+  const ultimo = useRef({ texto: "", t: 0 });
 
   useEffect(() => {
     let scanner;
@@ -1296,9 +1354,16 @@ function ScannerModal({ onScan, onClose }) {
             { facingMode: "environment" },
             { fps: 10, qrbox: { width: 240, height: 240 } },
             (texto) => {
-              if (yaLeido.current) return;
-              yaLeido.current = true;
-              onScan(texto);
+              const ahora = Date.now();
+              // Pausa corta entre lecturas + ignora el mismo código repetido.
+              if (ahora - ultimo.current.t < 1600) return;
+              if (texto === ultimo.current.texto && ahora - ultimo.current.t < 3500) return;
+              ultimo.current = { texto, t: ahora };
+              const res = onScan(texto);
+              if (res) {
+                setFlash(res);
+                setTimeout(() => setFlash(null), 1500);
+              }
             },
             () => {}
           )
@@ -1326,12 +1391,15 @@ function ScannerModal({ onScan, onClose }) {
     };
   }, []);
 
+  const items = cuenta.reduce((s, l) => s + (Number(l.cantidad) || 1), 0);
+  const total = cuenta.reduce((s, l) => s + (Number(l.precio) || 0) * (Number(l.cantidad) || 1), 0);
+
   return (
     <div className="fixed inset-0 bg-black z-50 flex flex-col">
       <div className="bg-[#2F4A33] text-white px-5 py-3 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2">
           <ScanLine className="w-5 h-5" />
-          <span className="font-serif text-lg font-bold">Escanear producto</span>
+          <span className="font-serif text-lg font-bold">Escanear productos</span>
         </div>
         <button onClick={onClose} className="p-1 rounded-full hover:bg-white/10">
           <X className="w-6 h-6" />
@@ -1343,9 +1411,14 @@ function ScannerModal({ onScan, onClose }) {
         {!listo && !error && (
           <p className="text-white/80 text-sm text-center">Preparando la cámara…</p>
         )}
-        {listo && !error && (
+        {listo && !error && !flash && (
           <p className="text-white/90 text-sm text-center max-w-xs">
-            Apunta la cámara al código QR del producto. Se abre la venta solita. 📷
+            Apunta al código QR de cada producto. Se van sumando a la cuenta. 📷
+          </p>
+        )}
+        {flash && (
+          <p className={`text-sm text-center max-w-xs font-semibold px-4 py-2 rounded-lg ${flash.ok ? "bg-[#4B6B4F] text-white" : "bg-[#A6402F] text-white"}`}>
+            {flash.msg}
           </p>
         )}
         {error && (
@@ -1355,65 +1428,110 @@ function ScannerModal({ onScan, onClose }) {
           </div>
         )}
       </div>
+
+      {/* Barra de la cuenta que se va armando */}
+      {cuenta.length > 0 && (
+        <div className="shrink-0 bg-[#2F4A33] px-4 py-3 flex items-center justify-between gap-3">
+          <span className="text-white/90 text-sm flex items-center gap-2">
+            <ShoppingCart className="w-4 h-4" /> {items} {items === 1 ? "producto" : "productos"} · <span className="font-serif font-bold">Q{total}</span>
+          </span>
+          <button onClick={onCobrar} className="bg-white text-[#2F4A33] font-semibold text-sm px-4 py-2 rounded-lg">
+            Cobrar
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
-function SellForm({ target, onClose, onSubmit }) {
-  const vendedorGuardado = (() => { try { return localStorage.getItem("vendedor_clinica") || ""; } catch (err) { return ""; } })();
-  const [form, setForm] = useState({ cantidad: 1, metodoPago: target.metodoPago, precio: String(target.precio), vendedor: vendedorGuardado });
+// Pantalla de COBRO de la cuenta: muestra todos los productos que un cliente
+// compró juntos, deja ajustar cantidad y precio, elegir el método de pago,
+// escribir el nombre del cliente (opcional) y ver el TOTAL a cobrar.
+function CuentaModal({ cuenta, onClose, onQuitar, onCambiar, onCobrar }) {
+  const [metodoPago, setMetodoPago] = useState(cuenta[0]?.producto?.metodoPago || "Efectivo");
+  const [cliente, setCliente] = useState("");
   const [enviando, setEnviando] = useState(false);
 
-  const precioUnit = form.precio !== "" ? Number(form.precio) : target.precio;
-  const total = (precioUnit || 0) * (Number(form.cantidad) || 1);
-  const precioEspecial = Number(form.precio) !== target.precio;
-  const puedeGuardar = form.vendedor.trim() !== "" && Number(form.cantidad) > 0 && !enviando;
+  const total = cuenta.reduce((s, l) => s + (Number(l.precio) || 0) * (Number(l.cantidad) || 1), 0);
+  const puedeCobrar = cuenta.length > 0 && !enviando;
 
   return (
-    <Modal title={`Registrar venta: ${target.nombre}`} onClose={onClose}>
+    <Modal title="Cuenta del cliente" onClose={onClose}>
       <div className="space-y-3">
-        <label className="block">
-          <span className="text-xs font-medium text-[#2F4A33]">Atendido por</span>
-          <input type="text" value={form.vendedor} onChange={(e) => setForm((f) => ({ ...f, vendedor: e.target.value }))} autoFocus
-            className="w-full mt-1 bg-white border border-[#E4DFCE] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#4B6B4F]/30"
-            placeholder="Nombre de la persona" />
-        </label>
-        {target.tipo === "producto" && (
-          <label className="block">
-            <span className="text-xs font-medium text-[#2F4A33]">Cantidad vendida</span>
-            <input type="number" min="1" max={target.stock} value={form.cantidad}
-              onChange={(e) => setForm((f) => ({ ...f, cantidad: e.target.value }))}
-              className="w-full mt-1 bg-white border border-[#E4DFCE] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#4B6B4F]/30" />
-            <span className="text-xs text-[#8A8368]">Disponible: {target.stock}</span>
-          </label>
+        {cuenta.length === 0 && (
+          <p className="text-sm text-[#8A8368] text-center py-6">La cuenta está vacía. Agrega o escanea productos.</p>
         )}
-        <label className="block">
-          <span className="text-xs font-medium text-[#2F4A33]">Precio unitario (Q)</span>
-          <input type="number" min="0" value={form.precio} onChange={(e) => setForm((f) => ({ ...f, precio: e.target.value }))}
-            className="w-full mt-1 bg-white border border-[#E4DFCE] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#4B6B4F]/30" />
-          <span className="text-xs text-[#8A8368]">
-            Precio normal: Q{target.precio}.{precioEspecial ? " Estás usando un precio especial." : " Puedes cambiarlo si hay precio especial."}
-          </span>
-        </label>
+
+        {/* Lista de productos de la cuenta */}
+        <div className="space-y-2">
+          {cuenta.map((l) => {
+            const tope = l.producto.tipo === "producto" ? (l.producto.stock ?? 9999) : 9999;
+            const subtotal = (Number(l.precio) || 0) * (Number(l.cantidad) || 1);
+            return (
+              <div key={l.lineId} className="bg-white border border-[#E4DFCE] rounded-xl p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="font-medium text-sm text-[#2F4A33] leading-snug">{l.producto.nombre}</p>
+                  <button onClick={() => onQuitar(l.lineId)} className="text-[#A6402F] shrink-0 p-0.5" aria-label="Quitar">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+                <div className="flex items-center justify-between gap-3 mt-2">
+                  {/* Cantidad con − y + */}
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => onCambiar(l.lineId, "cantidad", Math.max(1, (Number(l.cantidad) || 1) - 1))}
+                      className="w-8 h-8 rounded-lg border border-[#E4DFCE] text-[#2F4A33] text-lg leading-none flex items-center justify-center">−</button>
+                    <span className="w-6 text-center font-medium text-sm">{l.cantidad}</span>
+                    <button onClick={() => onCambiar(l.lineId, "cantidad", Math.min(tope, (Number(l.cantidad) || 1) + 1))}
+                      className="w-8 h-8 rounded-lg border border-[#E4DFCE] text-[#2F4A33] text-lg leading-none flex items-center justify-center">+</button>
+                  </div>
+                  {/* Precio unitario editable */}
+                  <label className="flex items-center gap-1 text-sm">
+                    <span className="text-[#8A8368] text-xs">Q</span>
+                    <input type="number" min="0" value={l.precio}
+                      onChange={(e) => onCambiar(l.lineId, "precio", e.target.value)}
+                      className="w-20 bg-white border border-[#E4DFCE] rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-[#4B6B4F]/30" />
+                  </label>
+                  <span className="font-serif font-bold text-[#4B6B4F] text-sm w-16 text-right">Q{subtotal}</span>
+                </div>
+                {l.producto.tipo === "producto" && (
+                  <p className="text-xs text-[#8A8368] mt-1">Disponible: {l.producto.stock}</p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Método de pago (uno para toda la cuenta) */}
         <label className="block">
           <span className="text-xs font-medium text-[#2F4A33]">Método de pago</span>
           <div className="flex gap-2 mt-1">
             {metodosPago.map(({ key, icon: Icon }) => (
-              <button key={key} onClick={() => setForm((f) => ({ ...f, metodoPago: key }))}
-                className={`flex-1 flex flex-col items-center gap-1 text-xs py-2 rounded-lg border transition ${form.metodoPago === key ? "bg-[#4B6B4F] text-white border-[#4B6B4F]" : "border-[#E4DFCE] text-[#2F4A33]"}`}>
+              <button key={key} onClick={() => setMetodoPago(key)}
+                className={`flex-1 flex flex-col items-center gap-1 text-xs py-2 rounded-lg border transition ${metodoPago === key ? "bg-[#4B6B4F] text-white border-[#4B6B4F]" : "border-[#E4DFCE] text-[#2F4A33]"}`}>
                 <Icon className="w-4 h-4" />
                 {key}
               </button>
             ))}
           </div>
         </label>
-        <div className="bg-[#F7F4EC] rounded-lg p-3 flex justify-between text-sm">
-          <span className="text-[#2F4A33]">Total</span>
-          <span className="font-serif font-bold text-[#4B6B4F]">Q{total.toFixed(2)}</span>
+
+        {/* Nombre del cliente (opcional) */}
+        <label className="block">
+          <span className="text-xs font-medium text-[#2F4A33]">Nombre del cliente (opcional)</span>
+          <input type="text" value={cliente} onChange={(e) => setCliente(e.target.value)}
+            className="w-full mt-1 bg-white border border-[#E4DFCE] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#4B6B4F]/30"
+            placeholder="¿A nombre de quién es esta cuenta?" />
+        </label>
+
+        {/* Total a cobrar */}
+        <div className="bg-[#F7F4EC] rounded-lg p-3 flex justify-between items-center">
+          <span className="text-[#2F4A33] font-medium">Total a cobrar</span>
+          <span className="font-serif font-bold text-2xl text-[#4B6B4F]">Q{total}</span>
         </div>
-        <button onClick={() => { if (!puedeGuardar) return; setEnviando(true); onSubmit(form); }} disabled={!puedeGuardar}
-          className="w-full bg-[#4B6B4F] text-white py-2.5 rounded-lg font-medium text-sm disabled:opacity-50">
-          {enviando ? "Guardando..." : "Confirmar venta"}
+
+        <button onClick={() => { if (!puedeCobrar) return; setEnviando(true); onCobrar({ metodoPago, cliente }); }} disabled={!puedeCobrar}
+          className="w-full bg-[#4B6B4F] text-white py-3 rounded-lg font-semibold text-sm disabled:opacity-50">
+          {enviando ? "Cobrando..." : `Cobrar Q${total}`}
         </button>
       </div>
     </Modal>
