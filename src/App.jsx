@@ -298,12 +298,25 @@ export default function App() {
 
   const filtered = products.filter((p) => p.nombre.toLowerCase().includes(query.toLowerCase()));
 
-  function handleAddProduct(form) {
-    setProducts((prev) => [...prev, {
-      id: Date.now(), nombre: form.nombre, tipo: form.tipo, precio: Number(form.precio),
-      metodoPago: form.metodoPago, stock: form.tipo === "producto" ? Number(form.stock) : null, foto: form.foto || null,
-    }]);
-    setShowAdd(false);
+  // Crea el producto NUEVO en Shopify (a través del servidor). Al terminar,
+  // refresca el catálogo para que aparezca con su stock y sus datos reales.
+  async function handleAddProduct(form) {
+    let r;
+    try {
+      const resp = await fetch("/api/crear-producto", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ nombre: form.nombre, precio: form.precio, tipo: form.tipo, stock: form.stock }),
+      });
+      r = await resp.json();
+    } catch (err) {
+      return { ok: false, error: "No hay conexión con el servidor. Revisa el internet e intenta de nuevo." };
+    }
+    if (r.ok) {
+      mostrarAviso(`Producto creado: ${form.nombre}. Ya quedó en Shopify y en todos los aparatos.`);
+      cargarProductos();
+    }
+    return r;
   }
 
   function handleEditProduct(form) {
@@ -312,6 +325,7 @@ export default function App() {
       metodoPago: form.metodoPago, stock: form.tipo === "producto" ? Number(form.stock) : null, foto: form.foto || p.foto,
     } : p));
     setEditTarget(null);
+    return { ok: true };
   }
 
   // Agrega un producto a la cuenta actual. Si ya está, le sube 1 a la cantidad
@@ -1206,6 +1220,22 @@ function RecibirForm({ target, onClose, onSubmit }) {
 
 function ProductForm({ title, initial, onClose, onSubmit }) {
   const [form, setForm] = useState(initial || { nombre: "", tipo: "producto", precio: "", metodoPago: "Efectivo", stock: "", foto: null });
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState(null);
+  const esNuevo = !initial;
+
+  async function guardar() {
+    if (!form.nombre || form.precio === "") return;
+    setGuardando(true);
+    setError(null);
+    const r = await onSubmit(form);
+    setGuardando(false);
+    if (r && r.ok === false) {
+      setError(r.error || "No se pudo guardar.");
+      return;
+    }
+    onClose();
+  }
 
   function handleFoto(e) {
     const file = e.target.files[0];
@@ -1279,9 +1309,14 @@ function ProductForm({ title, initial, onClose, onSubmit }) {
           </div>
         </label>
 
-        <button onClick={() => onSubmit(form)} disabled={!form.nombre || !form.precio}
+        {esNuevo && (
+          <p className="text-xs text-[#8A8368]">Se creará en Shopify y aparecerá en todos los aparatos. La foto se agrega después en Shopify.</p>
+        )}
+        {error && <p className="text-xs text-[#A6402F]">{error}</p>}
+
+        <button onClick={guardar} disabled={!form.nombre || form.precio === "" || guardando}
           className="w-full bg-[#4B6B4F] text-white py-2.5 rounded-lg font-medium text-sm mt-2 disabled:opacity-40">
-          Guardar
+          {guardando ? "Creando..." : (esNuevo ? "Crear producto" : "Guardar")}
         </button>
       </div>
     </Modal>
