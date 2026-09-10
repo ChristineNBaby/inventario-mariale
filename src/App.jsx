@@ -155,8 +155,10 @@ export default function App() {
   const [tab, setTab] = useState("inventario");
   const [query, setQuery] = useState("");
   const [showAdd, setShowAdd] = useState(false);
-  // La "cuenta actual": los productos que un mismo cliente va a pagar juntos.
+  // La "cuenta actual": los productos que un mismo cliente va a pagar juntos,
+  // y el nombre del cliente (se puede poner desde el principio, es opcional).
   const [cuenta, setCuenta] = useState([]);
+  const [clienteCuenta, setClienteCuenta] = useState("");
   const [showCuenta, setShowCuenta] = useState(false);
   const [editTarget, setEditTarget] = useState(null);
   const [shopifySynced, setShopifySynced] = useState(false);
@@ -384,12 +386,12 @@ export default function App() {
 
   // Cobra TODA la cuenta: registra cada producto con el mismo cliente y muestra
   // el total cobrado. Vacía la cuenta al terminar.
-  async function handleCobrar({ metodoPago, cliente }) {
+  async function handleCobrar({ metodoPago }) {
     const lineas = cuenta;
     if (lineas.length === 0) return;
     const meta = {
       ticketId: Date.now(),
-      cliente: (cliente || "").trim(),
+      cliente: (clienteCuenta || "").trim(),
       metodoPago,
       fecha: new Date().toISOString(),
     };
@@ -398,6 +400,7 @@ export default function App() {
 
     setShowCuenta(false);
     setCuenta([]);
+    setClienteCuenta("");
 
     // Registra las líneas una por una (en orden) para no pisar el cajón compartido.
     for (let i = 0; i < lineas.length; i++) {
@@ -869,9 +872,12 @@ export default function App() {
           onClick={() => setShowCuenta(true)}
           className="fixed bottom-4 left-4 right-4 z-40 bg-[#4B6B4F] text-white rounded-2xl shadow-xl px-5 py-3.5 flex items-center justify-between gap-3 hover:bg-[#3A5540] transition"
         >
-          <span className="flex items-center gap-2 font-medium">
-            <ShoppingCart className="w-5 h-5" />
-            {cuenta.reduce((s, l) => s + (Number(l.cantidad) || 1), 0)} en la cuenta
+          <span className="flex items-center gap-2 font-medium min-w-0">
+            <ShoppingCart className="w-5 h-5 shrink-0" />
+            <span className="truncate">
+              {clienteCuenta.trim() ? clienteCuenta.trim() : "Cuenta sin nombre"}
+              <span className="text-white/70 font-normal"> · {cuenta.reduce((s, l) => s + (Number(l.cantidad) || 1), 0)}</span>
+            </span>
           </span>
           <span className="flex items-center gap-2">
             <span className="font-serif font-bold text-lg">Q{cuenta.reduce((s, l) => s + (Number(l.precio) || 0) * (Number(l.cantidad) || 1), 0)}</span>
@@ -882,10 +888,10 @@ export default function App() {
 
       {showAdd && <ProductForm title="Nuevo producto o servicio" onClose={() => setShowAdd(false)} onSubmit={handleAddProduct} />}
       {editTarget && <ProductForm title="Editar" initial={editTarget} onClose={() => setEditTarget(null)} onSubmit={handleEditProduct} />}
-      {showCuenta && <CuentaModal cuenta={cuenta} onClose={() => setShowCuenta(false)} onQuitar={quitarDeCuenta} onCambiar={cambiarLinea} onCobrar={handleCobrar} />}
+      {showCuenta && <CuentaModal cuenta={cuenta} cliente={clienteCuenta} onCambiarCliente={setClienteCuenta} onClose={() => setShowCuenta(false)} onQuitar={quitarDeCuenta} onCambiar={cambiarLinea} onCobrar={handleCobrar} />}
       {showResumen && <ResumenInventario products={products} onClose={() => setShowResumen(false)} />}
       {showQR && <HojaQR products={products} onClose={() => setShowQR(false)} />}
-      {showScanner && <ScannerModal onScan={handleScan} cuenta={cuenta} onCobrar={() => { setShowScanner(false); setShowCuenta(true); }} onClose={() => setShowScanner(false)} />}
+      {showScanner && <ScannerModal onScan={handleScan} cuenta={cuenta} cliente={clienteCuenta} onCobrar={() => { setShowScanner(false); setShowCuenta(true); }} onClose={() => setShowScanner(false)} />}
       {pedidoTarget && <PedidoForm target={pedidoTarget} onClose={() => setPedidoTarget(null)} onSubmit={handleMarcarPedido} />}
       {recibirTarget && <RecibirForm target={recibirTarget} onClose={() => setRecibirTarget(null)} onSubmit={handleRecibir} />}
       {backorderTarget && <BackorderForm target={backorderTarget} onClose={() => setBackorderTarget(null)} onSubmit={handleBackorder} />}
@@ -1336,7 +1342,7 @@ function HojaQR({ products, onClose }) {
 // Cada lectura llama a onScan(texto) que devuelve { ok, msg }; el escáner muestra
 // ese mensaje y se re-arma solo (con una pausa corta para no leer dos veces el
 // mismo código). Abajo muestra la cuenta que se va armando y un botón "Cobrar".
-function ScannerModal({ onScan, cuenta, onCobrar, onClose }) {
+function ScannerModal({ onScan, cuenta, cliente, onCobrar, onClose }) {
   const [error, setError] = useState(null);
   const [listo, setListo] = useState(false);
   const [flash, setFlash] = useState(null); // { ok, msg }
@@ -1432,8 +1438,11 @@ function ScannerModal({ onScan, cuenta, onCobrar, onClose }) {
       {/* Barra de la cuenta que se va armando */}
       {cuenta.length > 0 && (
         <div className="shrink-0 bg-[#2F4A33] px-4 py-3 flex items-center justify-between gap-3">
-          <span className="text-white/90 text-sm flex items-center gap-2">
-            <ShoppingCart className="w-4 h-4" /> {items} {items === 1 ? "producto" : "productos"} · <span className="font-serif font-bold">Q{total}</span>
+          <span className="text-white/90 text-sm flex items-center gap-2 min-w-0">
+            <ShoppingCart className="w-4 h-4 shrink-0" />
+            <span className="truncate">
+              {cliente && cliente.trim() ? `${cliente.trim()} · ` : ""}{items} {items === 1 ? "producto" : "productos"} · <span className="font-serif font-bold">Q{total}</span>
+            </span>
           </span>
           <button onClick={onCobrar} className="bg-white text-[#2F4A33] font-semibold text-sm px-4 py-2 rounded-lg">
             Cobrar
@@ -1447,9 +1456,8 @@ function ScannerModal({ onScan, cuenta, onCobrar, onClose }) {
 // Pantalla de COBRO de la cuenta: muestra todos los productos que un cliente
 // compró juntos, deja ajustar cantidad y precio, elegir el método de pago,
 // escribir el nombre del cliente (opcional) y ver el TOTAL a cobrar.
-function CuentaModal({ cuenta, onClose, onQuitar, onCambiar, onCobrar }) {
+function CuentaModal({ cuenta, cliente, onCambiarCliente, onClose, onQuitar, onCambiar, onCobrar }) {
   const [metodoPago, setMetodoPago] = useState(cuenta[0]?.producto?.metodoPago || "Efectivo");
-  const [cliente, setCliente] = useState("");
   const [enviando, setEnviando] = useState(false);
 
   const total = cuenta.reduce((s, l) => s + (Number(l.precio) || 0) * (Number(l.cantidad) || 1), 0);
@@ -1458,6 +1466,14 @@ function CuentaModal({ cuenta, onClose, onQuitar, onCambiar, onCobrar }) {
   return (
     <Modal title="Cuenta del cliente" onClose={onClose}>
       <div className="space-y-3">
+        {/* Nombre del cliente — arriba del todo, para ponerlo desde el principio */}
+        <label className="block">
+          <span className="text-xs font-medium text-[#2F4A33]">Nombre del cliente (opcional)</span>
+          <input type="text" value={cliente} onChange={(e) => onCambiarCliente(e.target.value)} autoFocus
+            className="w-full mt-1 bg-white border border-[#E4DFCE] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#4B6B4F]/30"
+            placeholder="¿A nombre de quién es esta cuenta?" />
+        </label>
+
         {cuenta.length === 0 && (
           <p className="text-sm text-[#8A8368] text-center py-6">La cuenta está vacía. Agrega o escanea productos.</p>
         )}
@@ -1515,21 +1531,13 @@ function CuentaModal({ cuenta, onClose, onQuitar, onCambiar, onCobrar }) {
           </div>
         </label>
 
-        {/* Nombre del cliente (opcional) */}
-        <label className="block">
-          <span className="text-xs font-medium text-[#2F4A33]">Nombre del cliente (opcional)</span>
-          <input type="text" value={cliente} onChange={(e) => setCliente(e.target.value)}
-            className="w-full mt-1 bg-white border border-[#E4DFCE] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#4B6B4F]/30"
-            placeholder="¿A nombre de quién es esta cuenta?" />
-        </label>
-
         {/* Total a cobrar */}
         <div className="bg-[#F7F4EC] rounded-lg p-3 flex justify-between items-center">
           <span className="text-[#2F4A33] font-medium">Total a cobrar</span>
           <span className="font-serif font-bold text-2xl text-[#4B6B4F]">Q{total}</span>
         </div>
 
-        <button onClick={() => { if (!puedeCobrar) return; setEnviando(true); onCobrar({ metodoPago, cliente }); }} disabled={!puedeCobrar}
+        <button onClick={() => { if (!puedeCobrar) return; setEnviando(true); onCobrar({ metodoPago }); }} disabled={!puedeCobrar}
           className="w-full bg-[#4B6B4F] text-white py-3 rounded-lg font-semibold text-sm disabled:opacity-50">
           {enviando ? "Cobrando..." : `Cobrar Q${total}`}
         </button>
