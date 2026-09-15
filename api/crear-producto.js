@@ -14,6 +14,7 @@
 import { leerConfig, shopifyGraphql } from "./_shopify.js";
 
 const SHOPIFY_LOCATION_CLINICA = "gid://shopify/Location/79362425046"; // Clínica
+const SHOPIFY_PUBLICATION_TIENDA_ONLINE = "gid://shopify/Publication/131335258326"; // Tienda online
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -124,6 +125,20 @@ export default async function handler(req, res) {
         return;
       }
     }
+
+    // Publica el producto en la TIENDA ONLINE (para que aparezca en la página web).
+    // Si esto falla, el producto igual quedó creado; no rompemos la respuesta.
+    try {
+      await shopifyGraphql(
+        config,
+        `mutation($id: ID!, $input: [PublicationInput!]!) {
+          publishablePublish(id: $id, input: $input) {
+            userErrors { field message }
+          }
+        }`,
+        { id: producto.id, input: [{ publicationId: SHOPIFY_PUBLICATION_TIENDA_ONLINE }] }
+      );
+    } catch (err) {}
 
     res.status(200).json({
       ok: true,
