@@ -23,8 +23,8 @@ export default async function handler(req, res) {
   }
 
   const { productId, accion, cantidad, hastaFecha } = req.body || {};
-  if (!productId || !["por_pedir", "pedido", "backorder", "descartado", "quitar"].includes(accion)) {
-    res.status(400).json({ ok: false, error: "Faltan datos: productId y accion (por_pedir, pedido, backorder, descartado o quitar)." });
+  if (!productId || !["por_pedir", "aprobado", "pedido", "backorder", "descartado", "quitar"].includes(accion)) {
+    res.status(400).json({ ok: false, error: "Faltan datos: productId y accion (por_pedir, aprobado, pedido, backorder, descartado o quitar)." });
     return;
   }
 
@@ -45,7 +45,7 @@ export default async function handler(req, res) {
     } else {
       const valor = {
         estado: accion,
-        cantidad: accion === "pedido" ? Number(cantidad) || null : null,
+        cantidad: (accion === "pedido" || accion === "aprobado") ? Number(cantidad) || null : null,
         // Para backorder: fecha estimada de regreso, o null = "hasta confirmación".
         hastaFecha: accion === "backorder" && typeof hastaFecha === "string" && hastaFecha ? hastaFecha : null,
         fecha: new Date().toISOString(),
