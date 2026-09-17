@@ -80,7 +80,7 @@ function MetodoIcon({ metodo, className }) {
   return <Icon className={className} />;
 }
 
-function ProductCard({ p, onSell, onEdit }) {
+function ProductCard({ p, onSell, onEdit, onAjustarStock }) {
   const bajo = p.tipo === "producto" && p.stock <= 3;
   return (
     <div className="bg-white rounded-2xl border border-[#E4DFCE] p-4 flex gap-4 shadow-sm">
@@ -120,6 +120,11 @@ function ProductCard({ p, onSell, onEdit }) {
           <button onClick={() => onEdit(p)} className="text-xs font-medium border border-[#E4DFCE] text-[#2F4A33] px-3 py-1.5 rounded-lg hover:bg-[#F7F4EC] transition">
             Editar
           </button>
+          {p.tipo === "producto" && (
+            <button onClick={() => onAjustarStock(p)} className="text-xs font-medium border border-[#E4DFCE] text-[#2F4A33] px-3 py-1.5 rounded-lg hover:bg-[#F7F4EC] transition flex items-center gap-1">
+              <RefreshCw className="w-3.5 h-3.5" /> Corregir stock
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -167,6 +172,8 @@ export default function App() {
   const [cargandoProductos, setCargandoProductos] = useState(true);
   const [pedidoTarget, setPedidoTarget] = useState(null);
   const [cantidadTarget, setCantidadTarget] = useState(null);
+  const [ajustarTarget, setAjustarTarget] = useState(null);
+  const [editarCuentaTarget, setEditarCuentaTarget] = useState(null);
   const [recibirTarget, setRecibirTarget] = useState(null);
   const [backorderTarget, setBackorderTarget] = useState(null);
   const [aviso, setAviso] = useState(null);
@@ -426,6 +433,42 @@ export default function App() {
     setTimeout(() => setConfirmacionStock(null), 5000);
   }
 
+  // La Dra. corrige el stock de un producto directo en la app (ej: un conteo
+  // físico distinto a lo que dice el sistema). Se manda como delta (diferencia)
+  // a Shopify, con motivo "correccion", para que quede en el historial.
+  async function handleAjustarStock(nuevoStock) {
+    const producto = ajustarTarget;
+    setAjustarTarget(null);
+    const delta = Number(nuevoStock) - (producto.stock || 0);
+    if (!delta) return;
+    // Actualiza primero en la app, para que se vea al instante.
+    setProducts((prev) => prev.map((p) => (p.id === producto.id ? { ...p, stock: Number(nuevoStock) } : p)));
+    try {
+      const response = await fetch("/api/ajustar-stock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          inventoryItemId: producto.inventoryItemId,
+          variantId: producto.shopifyVariantId,
+          delta,
+          motivo: "correccion",
+        }),
+      });
+      const r = await response.json();
+      if (r.ok) {
+        const stockFinal = r.stockNuevo != null ? r.stockNuevo : Number(nuevoStock);
+        setProducts((prev) => prev.map((p) => (p.id === producto.id ? { ...p, stock: stockFinal } : p)));
+        mostrarAviso(`Stock corregido: ${producto.nombre} → ${stockFinal}.`);
+      } else {
+        setProducts((prev) => prev.map((p) => (p.id === producto.id ? { ...p, stock: producto.stock } : p)));
+        mostrarAviso(`No se pudo corregir el stock: ${r.error}`, "error");
+      }
+    } catch (err) {
+      setProducts((prev) => prev.map((p) => (p.id === producto.id ? { ...p, stock: producto.stock } : p)));
+      mostrarAviso("No se pudo conectar para corregir el stock.", "error");
+    }
+  }
+
   // Cancela una venta: la quita del registro y, si era un producto, devuelve la
   // cantidad al stock en Shopify (para que el inventario quede correcto).
   async function handleCancelarVenta(venta) {
@@ -465,6 +508,91 @@ export default function App() {
     } else {
       mostrarAviso("Venta cancelada.");
     }
+  }
+
+  // Guarda los cambios de una cuenta ya cobrada: nombre del cliente, cantidades,
+  // precios, productos agregados o quitados. Ajusta el stock en Shopify por la
+  // DIFERENCIA (no vuelve a descontar todo), y reemplaza las ventas de esa
+  // cuenta en el registro compartido.
+  async function handleGuardarEdicionCuenta(cuentaOriginal, form) {
+    setEditarCuentaTarget(null);
+    const cliente = (form.cliente || "").trim();
+    const nuevasLineas = form.lineas;
+    const idsOriginales = new Set(cuentaOriginal.map((v) => v.id));
+    const idsConservados = new Set(nuevasLineas.filter((l) => l.ventaId).map((l) => l.ventaId));
+
+    // 1) Ajustes de stock: líneas quitadas devuelven todo, líneas conservadas
+    // ajustan la diferencia, líneas nuevas descuentan completo.
+    const ajustes = [];
+    for (const v of cuentaOriginal) {
+      if (!idsConservados.has(v.id) && v.tipo === "producto") {
+        ajustes.push({ productoId: v.productoId, shopifyVariantId: v.shopifyVariantId, inventoryItemId: v.inventoryItemId, delta: v.cantidad });
+      }
+    }
+    for (const l of nuevasLineas) {
+      if (!l.ventaId || l.tipo !== "producto") continue;
+      const original = cuentaOriginal.find((v) => v.id === l.ventaId);
+      if (!original) continue;
+      const diff = original.cantidad - Number(l.cantidad);
+      if (diff !== 0) {
+        ajustes.push({ productoId: original.productoId, shopifyVariantId: original.shopifyVariantId, inventoryItemId: original.inventoryItemId, delta: diff });
+      }
+    }
+    for (const l of nuevasLineas) {
+      if (l.ventaId || l.tipo !== "producto") continue;
+      ajustes.push({ productoId: l.productoId, shopifyVariantId: l.shopifyVariantId, inventoryItemId: l.inventoryItemId, delta: -Number(l.cantidad) });
+    }
+    for (const a of ajustes) {
+      if (!a.delta) continue;
+      // Actualiza primero en la app (como el resto de la app), para que se vea
+      // al instante; luego corrige con el valor real que devuelva Shopify.
+      if (a.productoId != null) {
+        setProducts((prev) => prev.map((p) => (p.id === a.productoId ? { ...p, stock: Math.max(0, (p.stock || 0) + a.delta) } : p)));
+      }
+      try {
+        const response = await fetch("/api/ajustar-stock", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ inventoryItemId: a.inventoryItemId, variantId: a.shopifyVariantId, delta: a.delta, motivo: "correccion" }),
+        });
+        const r = await response.json();
+        if (r.ok && r.stockNuevo != null && a.productoId != null) {
+          setProducts((prev) => prev.map((p) => (p.id === a.productoId ? { ...p, stock: r.stockNuevo } : p)));
+        }
+      } catch (err) {}
+    }
+
+    // 2) Quita del cajón compartido TODAS las ventas viejas de esta cuenta...
+    for (const v of cuentaOriginal) {
+      guardarVentaCompartida("cancelar", { id: v.id });
+    }
+
+    // 3) ...y guarda la cuenta actualizada completa, con el mismo ticketId.
+    const primera = cuentaOriginal[0];
+    const ticketId = primera.ticketId || Date.now();
+    const ventasFinales = nuevasLineas.map((l, i) => ({
+      id: ticketId * 1000 + i,
+      ticketId,
+      productoId: l.productoId,
+      nombre: l.nombre,
+      cantidad: Number(l.cantidad) || 1,
+      precio: Number(l.precio) || 0,
+      metodoPago: primera.metodoPago,
+      canal: primera.canal || "Presencial",
+      fecha: primera.fecha,
+      cliente,
+      vendedor: cliente,
+      tipo: l.tipo,
+      shopifyVariantId: l.shopifyVariantId || null,
+      inventoryItemId: l.inventoryItemId || null,
+    }));
+
+    setSales((prev) => [...ventasFinales, ...prev.filter((s) => !idsOriginales.has(s.id))]);
+    ventasFinales.forEach((v) => guardarVentaCompartida("agregar", { venta: v }));
+
+    const total = ventasFinales.reduce((s, v) => s + v.precio * v.cantidad, 0);
+    enviarAlRegistro({ accion: "edicion_cuenta", ticketId, cliente, total });
+    mostrarAviso(`Cuenta actualizada${cliente ? ` — ${cliente}` : ""}. Total: Q${total}.`);
   }
 
   // ---------- Pedidos (reabastecimiento) ----------
@@ -746,7 +874,7 @@ export default function App() {
             <div className="space-y-3">
               {cargandoProductos && <p className="text-sm text-[#8A8368] text-center py-8">Cargando productos de Shopify...</p>}
               {!cargandoProductos && filtered.length === 0 && <p className="text-sm text-[#8A8368] text-center py-8">No hay nada que coincida.</p>}
-              {filtered.map((p) => <ProductCard key={p.id} p={p} onSell={agregarACuenta} onEdit={setEditTarget} />)}
+              {filtered.map((p) => <ProductCard key={p.id} p={p} onSell={agregarACuenta} onEdit={setEditTarget} onAjustarStock={setAjustarTarget} />)}
             </div>
           </>
         )}
@@ -890,6 +1018,10 @@ export default function App() {
                       </div>
                     ))}
                   </div>
+                  <button onClick={() => setEditarCuentaTarget(ventasCuenta)}
+                    className="mt-3 text-xs font-medium border border-[#E4DFCE] text-[#2F4A33] px-3 py-1.5 rounded-lg hover:bg-[#F7F4EC] transition">
+                    Editar cuenta
+                  </button>
                 </div>
               );
             })}
@@ -947,6 +1079,15 @@ export default function App() {
 
       {showAdd && <ProductForm title="Nuevo producto o servicio" onClose={() => setShowAdd(false)} onSubmit={handleAddProduct} />}
       {editTarget && <ProductForm title="Editar" initial={editTarget} onClose={() => setEditTarget(null)} onSubmit={handleEditProduct} />}
+      {ajustarTarget && <AjustarStockForm target={ajustarTarget} onClose={() => setAjustarTarget(null)} onSubmit={handleAjustarStock} />}
+      {editarCuentaTarget && (
+        <EditarCuentaForm
+          cuenta={editarCuentaTarget}
+          productos={products}
+          onClose={() => setEditarCuentaTarget(null)}
+          onSubmit={(form) => handleGuardarEdicionCuenta(editarCuentaTarget, form)}
+        />
+      )}
       {showCuenta && <CuentaModal cuenta={cuenta} cliente={clienteCuenta} onCambiarCliente={setClienteCuenta} onClose={() => setShowCuenta(false)} onQuitar={quitarDeCuenta} onCambiar={cambiarLinea} onCobrar={handleCobrar} />}
       {showResumen && <ResumenInventario products={products} onClose={() => setShowResumen(false)} />}
       {showQR && <HojaQR products={products} onClose={() => setShowQR(false)} />}
@@ -1274,6 +1415,35 @@ function BackorderForm({ target, onClose, onSubmit }) {
         <button onClick={() => onSubmit({ hastaFecha: null })}
           className="w-full border border-[#6B4E71] text-[#6B4E71] py-2.5 rounded-lg font-medium text-sm hover:bg-[#6B4E71]/5 transition">
           Hasta confirmación (sin fecha)
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+// La Dra. corrige el stock de un producto a mano (ej: hizo un conteo físico y
+// el número real es distinto al del sistema). Escribe el stock CORRECTO, no la
+// diferencia — la app calcula el ajuste solita.
+function AjustarStockForm({ target, onClose, onSubmit }) {
+  const [stock, setStock] = useState(String(target.stock ?? 0));
+  const diferencia = Number(stock) - (target.stock || 0);
+  return (
+    <Modal title={`Corregir stock: ${target.nombre}`} onClose={onClose}>
+      <div className="space-y-3">
+        <p className="text-sm text-[#8A8368]">El sistema dice {target.stock}. Escribe la cantidad real (después de contar) y se corrige en Shopify.</p>
+        <label className="block">
+          <span className="text-xs font-medium text-[#2F4A33]">Stock real</span>
+          <input type="number" min="0" value={stock} onChange={(e) => setStock(e.target.value)} autoFocus
+            className="w-full mt-1 bg-white border border-[#E4DFCE] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#4B6B4F]/30" />
+        </label>
+        {diferencia !== 0 && (
+          <p className={`text-xs font-medium ${diferencia > 0 ? "text-[#4B6B4F]" : "text-[#A6402F]"}`}>
+            {diferencia > 0 ? `Sube ${diferencia}` : `Baja ${Math.abs(diferencia)}`} respecto al stock actual.
+          </p>
+        )}
+        <button onClick={() => onSubmit(stock)} disabled={stock === "" || Number(stock) < 0 || diferencia === 0}
+          className="w-full bg-[#4B6B4F] text-white py-2.5 rounded-lg font-semibold text-sm disabled:opacity-40">
+          Corregir a {stock || 0}
         </button>
       </div>
     </Modal>
@@ -1630,6 +1800,122 @@ function ScannerModal({ onScan, cuenta, cliente, onCobrar, onClose }) {
 // Pantalla de COBRO de la cuenta: muestra todos los productos que un cliente
 // compró juntos, deja ajustar cantidad y precio, elegir el método de pago,
 // escribir el nombre del cliente (opcional) y ver el TOTAL a cobrar.
+// Edita una cuenta YA COBRADA: nombre del cliente, cantidades, precios, y
+// permite agregar o quitar productos. Al guardar, ajusta el stock en Shopify
+// solo por la diferencia y reemplaza el registro de esa cuenta.
+function EditarCuentaForm({ cuenta, productos, onClose, onSubmit }) {
+  const primera = cuenta[0];
+  const [cliente, setCliente] = useState((primera.cliente || primera.vendedor || "").trim());
+  const [lineas, setLineas] = useState(
+    cuenta.map((v) => ({
+      ventaId: v.id, productoId: v.productoId, nombre: v.nombre, cantidad: v.cantidad, precio: v.precio,
+      tipo: v.tipo, shopifyVariantId: v.shopifyVariantId, inventoryItemId: v.inventoryItemId,
+    }))
+  );
+  const [busca, setBusca] = useState("");
+  const [enviando, setEnviando] = useState(false);
+
+  const yaEnLista = new Set(lineas.map((l) => l.productoId));
+  const candidatos = busca.trim()
+    ? productos.filter((p) => !yaEnLista.has(p.id) && p.nombre.toLowerCase().includes(busca.toLowerCase())).slice(0, 5)
+    : [];
+
+  function cambiar(i, campo, valor) {
+    setLineas((prev) => prev.map((l, idx) => (idx === i ? { ...l, [campo]: valor } : l)));
+  }
+  function quitar(i) {
+    setLineas((prev) => prev.filter((_, idx) => idx !== i));
+  }
+  function agregarProducto(p) {
+    setLineas((prev) => [...prev, {
+      ventaId: null, productoId: p.id, nombre: p.nombre, cantidad: 1, precio: p.precio,
+      tipo: p.tipo, shopifyVariantId: p.shopifyVariantId || null, inventoryItemId: p.inventoryItemId || null,
+    }]);
+    setBusca("");
+  }
+
+  const total = lineas.reduce((s, l) => s + (Number(l.precio) || 0) * (Number(l.cantidad) || 1), 0);
+  const puedeGuardar = lineas.length > 0 && !enviando;
+
+  return (
+    <Modal title="Editar cuenta" onClose={onClose}>
+      <div className="space-y-3">
+        <label className="block">
+          <span className="text-xs font-medium text-[#2F4A33]">Nombre del cliente</span>
+          <input type="text" value={cliente} onChange={(e) => setCliente(e.target.value)}
+            className="w-full mt-1 bg-white border border-[#E4DFCE] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#4B6B4F]/30"
+            placeholder="¿A nombre de quién es esta cuenta?" />
+        </label>
+
+        <div className="space-y-2">
+          {lineas.map((l, i) => {
+            const subtotal = (Number(l.precio) || 0) * (Number(l.cantidad) || 1);
+            return (
+              <div key={l.ventaId ?? `nueva-${i}`} className="bg-white border border-[#E4DFCE] rounded-xl p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="font-medium text-sm text-[#2F4A33] leading-snug">{l.nombre}</p>
+                  <button onClick={() => quitar(i)} className="text-[#A6402F] shrink-0 p-0.5" aria-label="Quitar">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+                <div className="flex items-center justify-between gap-3 mt-2">
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => cambiar(i, "cantidad", Math.max(1, (Number(l.cantidad) || 1) - 1))}
+                      className="w-8 h-8 rounded-lg border border-[#E4DFCE] text-[#2F4A33] text-lg leading-none flex items-center justify-center">−</button>
+                    <span className="w-6 text-center font-medium text-sm">{l.cantidad}</span>
+                    <button onClick={() => cambiar(i, "cantidad", (Number(l.cantidad) || 1) + 1)}
+                      className="w-8 h-8 rounded-lg border border-[#E4DFCE] text-[#2F4A33] text-lg leading-none flex items-center justify-center">+</button>
+                  </div>
+                  <label className="flex items-center gap-1 text-sm">
+                    <span className="text-[#8A8368] text-xs">Q</span>
+                    <input type="number" min="0" value={l.precio}
+                      onChange={(e) => cambiar(i, "precio", e.target.value)}
+                      className="w-20 bg-white border border-[#E4DFCE] rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-[#4B6B4F]/30" />
+                  </label>
+                  <span className="font-serif font-bold text-[#4B6B4F] text-sm w-16 text-right">Q{subtotal}</span>
+                </div>
+              </div>
+            );
+          })}
+          {lineas.length === 0 && (
+            <p className="text-sm text-[#8A8368] text-center py-4">Sin productos. Agrega uno abajo.</p>
+          )}
+        </div>
+
+        <label className="block">
+          <span className="text-xs font-medium text-[#2F4A33]">Agregar producto a esta cuenta</span>
+          <div className="relative mt-1">
+            <Search className="w-4 h-4 text-[#8A8368] absolute left-3 top-1/2 -translate-y-1/2" />
+            <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar producto o servicio..."
+              className="w-full bg-white border border-[#E4DFCE] rounded-lg pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#4B6B4F]/30" />
+          </div>
+          {candidatos.length > 0 && (
+            <div className="bg-white rounded-lg border border-[#E4DFCE] divide-y divide-[#E4DFCE] mt-1">
+              {candidatos.map((p) => (
+                <button key={p.id} onClick={() => agregarProducto(p)}
+                  className="w-full text-left flex items-center justify-between gap-2 px-3 py-2 hover:bg-[#F7F4EC] transition">
+                  <span className="text-sm text-[#2F4A33]">{p.nombre}</span>
+                  <span className="text-xs text-[#8A8368]">Q{p.precio}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </label>
+
+        <div className="bg-[#F7F4EC] rounded-lg p-3 flex justify-between items-center">
+          <span className="text-[#2F4A33] font-medium">Total</span>
+          <span className="font-serif font-bold text-2xl text-[#4B6B4F]">Q{total}</span>
+        </div>
+
+        <button onClick={() => { if (!puedeGuardar) return; setEnviando(true); onSubmit({ cliente, lineas }); }} disabled={!puedeGuardar}
+          className="w-full bg-[#4B6B4F] text-white py-3 rounded-lg font-semibold text-sm disabled:opacity-50">
+          {enviando ? "Guardando..." : "Guardar cambios"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 function CuentaModal({ cuenta, cliente, onCambiarCliente, onClose, onQuitar, onCambiar, onCobrar }) {
   const [metodoPago, setMetodoPago] = useState(cuenta[0]?.producto?.metodoPago || "Efectivo");
   const [enviando, setEnviando] = useState(false);
