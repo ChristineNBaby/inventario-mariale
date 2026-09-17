@@ -166,7 +166,7 @@ export default function App() {
   const [showResumen, setShowResumen] = useState(false);
   const [cargandoProductos, setCargandoProductos] = useState(true);
   const [pedidoTarget, setPedidoTarget] = useState(null);
-  const [aprobarTarget, setAprobarTarget] = useState(null);
+  const [cantidadTarget, setCantidadTarget] = useState(null);
   const [recibirTarget, setRecibirTarget] = useState(null);
   const [backorderTarget, setBackorderTarget] = useState(null);
   const [aviso, setAviso] = useState(null);
@@ -540,20 +540,39 @@ export default function App() {
     }
   }
 
-  // La Dra. APRUEBA el pedido (con la cantidad a pedir) antes de que se haga.
-  // El producto pasa de "Por pedir" a "Aprobado" (listo para que se pida).
-  async function handleAprobar(form) {
-    const producto = aprobarTarget;
+  // Yeimi pone la cantidad a pedir de un producto y lo manda a la lista
+  // "Pendiente de aprobación". La Dra. después aprueba todo de una.
+  async function handlePonerPendiente(form) {
+    const producto = cantidadTarget;
     const cantidad = Number(form.cantidad);
-    setAprobarTarget(null);
+    setCantidadTarget(null);
     const anterior = producto.pedido || null;
-    actualizarPedidoLocal(producto.id, { estado: "aprobado", cantidad, fecha: new Date().toISOString() });
-    const r = await llamarApiPedido(producto, "aprobado", cantidad);
+    actualizarPedidoLocal(producto.id, { estado: "pendiente", cantidad, fecha: new Date().toISOString() });
+    const r = await llamarApiPedido(producto, "pendiente", cantidad);
     if (r.ok) {
-      mostrarAviso(`✓ Aprobado por la Dra.: ${cantidad} × ${producto.nombre}. Ya se puede pedir.`);
+      mostrarAviso(`Agregado al pedido: ${cantidad} × ${producto.nombre}. Falta que la Dra. lo apruebe.`);
     } else {
       actualizarPedidoLocal(producto.id, anterior);
-      mostrarAviso(`No se pudo aprobar: ${r.error}`, "error");
+      mostrarAviso(`No se pudo agregar: ${r.error}`, "error");
+    }
+  }
+
+  // La Dra. APRUEBA TODO el pedido pendiente de una sola vez (un clic). Cada
+  // producto pasa de "pendiente" a "aprobado" (listo para que Yeimi lo pida).
+  async function handleAprobarTodo() {
+    const lista = products.filter((p) => p.pedido?.estado === "pendiente");
+    if (lista.length === 0) return;
+    // Actualiza todo en la app al instante.
+    lista.forEach((p) => actualizarPedidoLocal(p.id, { ...p.pedido, estado: "aprobado" }));
+    let fallos = 0;
+    for (const p of lista) {
+      const r = await llamarApiPedido(p, "aprobado", p.pedido?.cantidad);
+      if (!r.ok) fallos++;
+    }
+    if (fallos === 0) {
+      mostrarAviso(`✅ Pedido aprobado por la Dra.: ${lista.length} ${lista.length === 1 ? "producto" : "productos"}. Ya se pueden pedir.`);
+    } else {
+      mostrarAviso(`Se aprobaron ${lista.length - fallos} de ${lista.length}. ${fallos} no se pudieron guardar, intenta de nuevo.`, "error");
     }
   }
 
@@ -612,13 +631,15 @@ export default function App() {
   const productosFisicos = products.filter((p) => p.tipo === "producto");
   const pedidosEnCamino = productosFisicos.filter((p) => p.pedido?.estado === "pedido");
   const backOrders = productosFisicos.filter((p) => p.pedido?.estado === "backorder");
+  // Pendiente de aprobación: Yeimi ya puso la cantidad, falta que la Dra. apruebe.
+  const pendientesAprob = productosFisicos.filter((p) => p.pedido?.estado === "pendiente");
   // Aprobados por la Dra.: ya se pueden pedir (esperan a que Yeimi los ordene).
   const aprobados = productosFisicos.filter((p) => p.pedido?.estado === "aprobado");
   const porPedir = productosFisicos.filter(
-    (p) => !["aprobado", "pedido", "backorder", "descartado"].includes(p.pedido?.estado) &&
+    (p) => !["pendiente", "aprobado", "pedido", "backorder", "descartado"].includes(p.pedido?.estado) &&
       (p.stock < UMBRAL_PEDIDO || p.pedido?.estado === "por_pedir")
   );
-  const pendientes = porPedir.length + aprobados.length + pedidosEnCamino.length;
+  const pendientes = porPedir.length + pendientesAprob.length + aprobados.length + pedidosEnCamino.length;
 
   // Reporte agrupado por día
   const porDia = sales.reduce((acc, s) => {
@@ -733,6 +754,7 @@ export default function App() {
         {tab === "pedidos" && (
           <PedidosTab
             porPedir={porPedir}
+            pendientesAprob={pendientesAprob}
             aprobados={aprobados}
             enCamino={pedidosEnCamino}
             backOrders={backOrders}
@@ -740,7 +762,8 @@ export default function App() {
             cargando={cargandoProductos}
             onRefrescar={cargarProductos}
             onMarcarPorPedir={marcarPorPedir}
-            onAprobar={setAprobarTarget}
+            onPonerCantidad={setCantidadTarget}
+            onAprobarTodo={handleAprobarTodo}
             onQuitar={quitarDePedidos}
             onDescartar={descartarDePedidos}
             onAbrirPedido={setPedidoTarget}
@@ -928,7 +951,7 @@ export default function App() {
       {showResumen && <ResumenInventario products={products} onClose={() => setShowResumen(false)} />}
       {showQR && <HojaQR products={products} onClose={() => setShowQR(false)} />}
       {showScanner && <ScannerModal onScan={handleScan} cuenta={cuenta} cliente={clienteCuenta} onCobrar={() => { setShowScanner(false); setShowCuenta(true); }} onClose={() => setShowScanner(false)} />}
-      {aprobarTarget && <AprobarForm target={aprobarTarget} onClose={() => setAprobarTarget(null)} onSubmit={handleAprobar} />}
+      {cantidadTarget && <CantidadForm target={cantidadTarget} onClose={() => setCantidadTarget(null)} onSubmit={handlePonerPendiente} />}
       {pedidoTarget && <PedidoForm target={pedidoTarget} onClose={() => setPedidoTarget(null)} onSubmit={handleMarcarPedido} />}
       {recibirTarget && <RecibirForm target={recibirTarget} onClose={() => setRecibirTarget(null)} onSubmit={handleRecibir} />}
       {backorderTarget && <BackorderForm target={backorderTarget} onClose={() => setBackorderTarget(null)} onSubmit={handleBackorder} />}
@@ -1015,10 +1038,10 @@ function formatearFecha(iso) {
 // bajo el umbral — nadie tiene que revisar el inventario a mano. El flujo es:
 // Por pedir → "Ya lo pedí" (con cantidad) → En camino → "Llegó" → la cantidad
 // recibida se SUMA automáticamente al stock en Shopify.
-function PedidosTab({ porPedir, aprobados, enCamino, backOrders, productos, cargando, onRefrescar, onMarcarPorPedir, onAprobar, onQuitar, onDescartar, onAbrirPedido, onAbrirRecibir, onAbrirBackorder }) {
+function PedidosTab({ porPedir, pendientesAprob, aprobados, enCamino, backOrders, productos, cargando, onRefrescar, onMarcarPorPedir, onPonerCantidad, onAprobarTodo, onQuitar, onDescartar, onAbrirPedido, onAbrirRecibir, onAbrirBackorder }) {
   const [busca, setBusca] = useState("");
 
-  const yaListados = new Set([...porPedir, ...aprobados, ...enCamino, ...backOrders].map((p) => p.id));
+  const yaListados = new Set([...porPedir, ...pendientesAprob, ...aprobados, ...enCamino, ...backOrders].map((p) => p.id));
   const candidatos = busca.trim()
     ? productos.filter((p) => !yaListados.has(p.id) && p.nombre.toLowerCase().includes(busca.toLowerCase())).slice(0, 5)
     : [];
@@ -1027,7 +1050,7 @@ function PedidosTab({ porPedir, aprobados, enCamino, backOrders, productos, carg
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs text-[#8A8368]">
-          Lo que baja de {UMBRAL_PEDIDO} entra a "Por pedir" → la Dra. aprueba → se pide.
+          Yeimi pone las cantidades en "Por pedir" → la Dra. aprueba todo con un clic → se pide.
         </p>
         <button onClick={onRefrescar} className="flex items-center gap-1.5 text-xs bg-white border border-[#E4DFCE] px-2.5 py-1.5 rounded-full text-[#2F4A33] shrink-0">
           <RefreshCw className={`w-3.5 h-3.5 ${cargando ? "animate-spin" : ""}`} /> Actualizar
@@ -1053,8 +1076,8 @@ function PedidosTab({ porPedir, aprobados, enCamino, backOrders, productos, carg
                 </div>
               </div>
               <div className="flex items-center gap-1 shrink-0">
-                <button onClick={() => onAprobar(p)} className="flex items-center gap-1 text-xs font-medium bg-[#4B6B4F] text-white px-3 py-1.5 rounded-lg hover:bg-[#3A5540] transition">
-                  <PackageCheck className="w-3.5 h-3.5" /> Aprobar
+                <button onClick={() => onPonerCantidad(p)} className="flex items-center gap-1 text-xs font-medium bg-[#C89B3C] text-white px-3 py-1.5 rounded-lg hover:opacity-90 transition">
+                  <Plus className="w-3.5 h-3.5" /> Agregar al pedido
                 </button>
                 <button onClick={() => onAbrirBackorder(p)} className="text-[#6B4E71] border border-[#6B4E71]/30 p-1.5 rounded-lg hover:bg-[#6B4E71]/5 transition" title="Agotado con proveedor (back order)">
                   <Hourglass className="w-4 h-4" />
@@ -1069,11 +1092,49 @@ function PedidosTab({ porPedir, aprobados, enCamino, backOrders, productos, carg
       </section>
 
       <section>
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <h3 className="flex items-center gap-2 font-serif font-bold text-[#6B4E71]">
+            <ClipboardList className="w-4 h-4" /> Pendiente de aprobación ({pendientesAprob.length})
+          </h3>
+          {pendientesAprob.length > 0 && (
+            <button onClick={onAprobarTodo} className="flex items-center gap-1.5 text-sm font-semibold bg-[#4B6B4F] text-white px-3.5 py-2 rounded-lg shadow-sm hover:bg-[#3A5540] transition shrink-0">
+              <PackageCheck className="w-4 h-4" /> Aprobar pedido ({pendientesAprob.length})
+            </button>
+          )}
+        </div>
+        {pendientesAprob.length === 0 && (
+          <p className="text-sm text-[#8A8368] bg-white border border-[#E4DFCE] rounded-xl px-3 py-3">Nada pendiente. Agrega productos desde "Por pedir" con su cantidad, y aquí la Dra. aprueba todo de una.</p>
+        )}
+        <div className="space-y-2">
+          {pendientesAprob.map((p) => (
+            <div key={p.id} className="bg-white rounded-xl border border-[#6B4E71]/35 p-3 flex items-center gap-3">
+              <FotoMini p={p} />
+              <div className="flex-1 min-w-0">
+                <p className="font-medium text-sm text-[#2F4A33] truncate">{p.nombre}</p>
+                <div className="flex items-center gap-2 mt-1 flex-wrap">
+                  <Badge tone="pedido">Pedir: {p.pedido?.cantidad ?? "—"}</Badge>
+                  <span className="text-xs text-[#8A8368]">quedan {p.stock}</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <button onClick={() => onPonerCantidad(p)} className="text-xs font-medium border border-[#E4DFCE] text-[#2F4A33] px-2.5 py-1.5 rounded-lg hover:bg-[#F7F4EC] transition">
+                  Cambiar
+                </button>
+                <button onClick={() => onQuitar(p)} className="text-[#8A8368] p-1.5 hover:text-[#A6402F]" title="Quitar del pedido">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section>
         <h3 className="flex items-center gap-2 font-serif font-bold text-[#4B6B4F] mb-2">
           <PackageCheck className="w-4 h-4" /> Aprobados — listos para pedir ({aprobados.length})
         </h3>
         {aprobados.length === 0 && (
-          <p className="text-sm text-[#8A8368] bg-white border border-[#E4DFCE] rounded-xl px-3 py-3">Nada aprobado todavía. La Dra. aprueba desde "Por pedir".</p>
+          <p className="text-sm text-[#8A8368] bg-white border border-[#E4DFCE] rounded-xl px-3 py-3">Nada aprobado todavía. La Dra. aprueba desde "Pendiente de aprobación".</p>
         )}
         <div className="space-y-2">
           {aprobados.map((p) => (
@@ -1219,25 +1280,24 @@ function BackorderForm({ target, onClose, onSubmit }) {
   );
 }
 
-// La Dra. APRUEBA el pedido antes de que se haga. Confirma cuántas unidades
-// pedir (sugerimos llegar a ~10 en stock, editable). Solo lo aprobado se pide,
-// para que nada se ordene por error.
-function AprobarForm({ target, onClose, onSubmit }) {
-  const sugerida = Math.max(1, 10 - (target.stock || 0));
+// Yeimi pone cuántas unidades pedir de un producto. Pasa a "Pendiente de
+// aprobación" para que la Dra. lo apruebe con el resto del pedido, de una vez.
+function CantidadForm({ target, onClose, onSubmit }) {
+  const sugerida = target.pedido?.cantidad || Math.max(1, 10 - (target.stock || 0));
   const [cantidad, setCantidad] = useState(String(sugerida));
   return (
-    <Modal title={`Aprobar pedido: ${target.nombre}`} onClose={onClose}>
+    <Modal title={`¿Cuánto pedir?: ${target.nombre}`} onClose={onClose}>
       <div className="space-y-3">
-        <p className="text-sm text-[#8A8368]">Quedan {target.stock}. Revisa cuántas unidades pedir y aprueba. Solo lo aprobado se puede pedir.</p>
+        <p className="text-sm text-[#8A8368]">Quedan {target.stock}. Pon cuántas unidades pedir. Después la Dra. lo aprueba junto con todo el pedido.</p>
         <label className="block">
           <span className="text-xs font-medium text-[#2F4A33]">Cantidad a pedir</span>
           <input type="number" min="1" value={cantidad} onChange={(e) => setCantidad(e.target.value)} autoFocus
             className="w-full mt-1 bg-white border border-[#E4DFCE] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#4B6B4F]/30" />
-          <span className="text-xs text-[#8A8368]">Sugerido: {sugerida} (para llegar a ~10). Cámbialo si quieres.</span>
+          <span className="text-xs text-[#8A8368]">Sugerido: {Math.max(1, 10 - (target.stock || 0))} (para llegar a ~10). Cámbialo según el mínimo del proveedor.</span>
         </label>
         <button onClick={() => onSubmit({ cantidad })} disabled={!(Number(cantidad) > 0)}
-          className="w-full bg-[#4B6B4F] text-white py-2.5 rounded-lg font-semibold text-sm disabled:opacity-40">
-          ✓ Aprobar pedido
+          className="w-full bg-[#C89B3C] text-white py-2.5 rounded-lg font-semibold text-sm disabled:opacity-40">
+          Agregar al pedido
         </button>
       </div>
     </Modal>
