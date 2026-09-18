@@ -327,12 +327,71 @@ export default function App() {
     return r;
   }
 
-  function handleEditProduct(form) {
-    setProducts((prev) => prev.map((p) => p.id === editTarget.id ? {
-      ...p, nombre: form.nombre, tipo: form.tipo, precio: Number(form.precio),
-      metodoPago: form.metodoPago, stock: form.tipo === "producto" ? Number(form.stock) : null, foto: form.foto || p.foto,
-    } : p));
-    setEditTarget(null);
+  // Guarda los cambios de "Editar": nombre, precio, stock, método de pago y
+  // foto. Si el producto ya existe en Shopify, sincroniza ahí nombre/precio y
+  // (si cambió) el stock — antes esto solo se guardaba en la pantalla y se
+  // perdía en cuanto la app volvía a cargar el catálogo real de Shopify.
+  async function handleEditProduct(form) {
+    const original = editTarget;
+    const nombre = form.nombre.trim();
+    const precio = Number(form.precio);
+    const nuevoStock = form.tipo === "producto" ? Number(form.stock) : null;
+
+    // Actualiza primero en la app, para que se vea al instante.
+    setProducts((prev) => prev.map((p) => (p.id === original.id ? {
+      ...p, nombre, tipo: form.tipo, precio,
+      metodoPago: form.metodoPago, stock: nuevoStock, foto: form.foto || p.foto,
+    } : p)));
+
+    if (!original.shopifyProductId) {
+      // Producto solo local (no viene de Shopify): no hay nada más que sincronizar.
+      return { ok: true };
+    }
+
+    if (nombre !== original.nombre || precio !== original.precio) {
+      try {
+        const resp = await fetch("/api/actualizar-producto", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            shopifyProductId: original.shopifyProductId,
+            shopifyVariantId: original.shopifyVariantId,
+            nombre: nombre !== original.nombre ? nombre : undefined,
+            precio: precio !== original.precio ? precio : undefined,
+          }),
+        });
+        const r = await resp.json();
+        if (!r.ok) {
+          setProducts((prev) => prev.map((p) => (p.id === original.id ? original : p)));
+          return { ok: false, error: r.error || "No se pudo guardar en Shopify." };
+        }
+      } catch (err) {
+        setProducts((prev) => prev.map((p) => (p.id === original.id ? original : p)));
+        return { ok: false, error: "No se pudo conectar con el servidor." };
+      }
+    }
+
+    if (original.tipo === "producto" && nuevoStock != null && nuevoStock !== original.stock) {
+      const delta = nuevoStock - (original.stock || 0);
+      try {
+        const resp = await fetch("/api/ajustar-stock", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ inventoryItemId: original.inventoryItemId, variantId: original.shopifyVariantId, delta, motivo: "correccion" }),
+        });
+        const r = await resp.json();
+        if (r.ok && r.stockNuevo != null) {
+          setProducts((prev) => prev.map((p) => (p.id === original.id ? { ...p, stock: r.stockNuevo } : p)));
+        } else if (!r.ok) {
+          setProducts((prev) => prev.map((p) => (p.id === original.id ? { ...p, stock: original.stock } : p)));
+          return { ok: false, error: `Nombre/precio guardados, pero el stock no se pudo corregir: ${r.error}` };
+        }
+      } catch (err) {
+        setProducts((prev) => prev.map((p) => (p.id === original.id ? { ...p, stock: original.stock } : p)));
+        return { ok: false, error: "Nombre/precio guardados, pero no se pudo conectar para corregir el stock." };
+      }
+    }
+
     return { ok: true };
   }
 
