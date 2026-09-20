@@ -104,7 +104,9 @@ export default async function handler(req, res) {
       {
         input: {
           email: correoLimpio,
-          phone: telefonoLimpio || null,
+          // El teléfono NO se manda como campo de Shopify a propósito: valida el
+          // formato y rechazaría números escritos como "5555 5555" o "+502 …".
+          // Va en la nota, que es donde la secretaria lo lee de todos modos.
           note: notaPartes.join("\n"),
           tags: ["solicitud-web"],
           lineItems: lineas.map((linea) => ({
