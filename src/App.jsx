@@ -763,6 +763,20 @@ export default function App() {
     }
   }
 
+  // La Dra. aprueba UN SOLO producto de la lista pendiente, sin tener que
+  // aprobar todo el lote junto.
+  async function handleAprobarUno(producto) {
+    const anterior = producto.pedido || null;
+    actualizarPedidoLocal(producto.id, { ...producto.pedido, estado: "aprobado" });
+    const r = await llamarApiPedido(producto, "aprobado", producto.pedido?.cantidad);
+    if (r.ok) {
+      mostrarAviso(`✓ Aprobado: ${producto.pedido?.cantidad ?? "—"} × ${producto.nombre}. Ya se puede pedir.`);
+    } else {
+      actualizarPedidoLocal(producto.id, anterior);
+      mostrarAviso(`No se pudo aprobar: ${r.error}`, "error");
+    }
+  }
+
   // Se anotó un pedido al proveedor, con la cantidad ordenada.
   async function handleMarcarPedido(form) {
     const producto = pedidoTarget;
@@ -951,6 +965,7 @@ export default function App() {
             onMarcarPorPedir={marcarPorPedir}
             onPonerCantidad={setCantidadTarget}
             onAprobarTodo={handleAprobarTodo}
+            onAprobarUno={handleAprobarUno}
             onQuitar={quitarDePedidos}
             onDescartar={descartarDePedidos}
             onAbrirPedido={setPedidoTarget}
@@ -1238,7 +1253,7 @@ function formatearFecha(iso) {
 // bajo el umbral — nadie tiene que revisar el inventario a mano. El flujo es:
 // Por pedir → "Ya lo pedí" (con cantidad) → En camino → "Llegó" → la cantidad
 // recibida se SUMA automáticamente al stock en Shopify.
-function PedidosTab({ porPedir, pendientesAprob, aprobados, enCamino, backOrders, productos, cargando, onRefrescar, onMarcarPorPedir, onPonerCantidad, onAprobarTodo, onQuitar, onDescartar, onAbrirPedido, onAbrirRecibir, onAbrirBackorder }) {
+function PedidosTab({ porPedir, pendientesAprob, aprobados, enCamino, backOrders, productos, cargando, onRefrescar, onMarcarPorPedir, onPonerCantidad, onAprobarTodo, onAprobarUno, onQuitar, onDescartar, onAbrirPedido, onAbrirRecibir, onAbrirBackorder }) {
   const [busca, setBusca] = useState("");
 
   const yaListados = new Set([...porPedir, ...pendientesAprob, ...aprobados, ...enCamino, ...backOrders].map((p) => p.id));
@@ -1250,7 +1265,7 @@ function PedidosTab({ porPedir, pendientesAprob, aprobados, enCamino, backOrders
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs text-[#8A8368]">
-          Yeimi pone las cantidades en "Por pedir" → la Dra. aprueba todo con un clic → se pide.
+          Yeimi pone las cantidades en "Por pedir" → la Dra. aprueba uno por uno o todos juntos → se pide.
         </p>
         <button onClick={onRefrescar} className="flex items-center gap-1.5 text-xs bg-white border border-[#E4DFCE] px-2.5 py-1.5 rounded-full text-[#2F4A33] shrink-0">
           <RefreshCw className={`w-3.5 h-3.5 ${cargando ? "animate-spin" : ""}`} /> Actualizar
@@ -1317,6 +1332,9 @@ function PedidosTab({ porPedir, pendientesAprob, aprobados, enCamino, backOrders
                 </div>
               </div>
               <div className="flex items-center gap-1 shrink-0">
+                <button onClick={() => onAprobarUno(p)} className="flex items-center gap-1 text-xs font-medium bg-[#4B6B4F] text-white px-2.5 py-1.5 rounded-lg hover:bg-[#3A5540] transition">
+                  <PackageCheck className="w-3.5 h-3.5" /> Aprobar
+                </button>
                 <button onClick={() => onPonerCantidad(p)} className="text-xs font-medium border border-[#E4DFCE] text-[#2F4A33] px-2.5 py-1.5 rounded-lg hover:bg-[#F7F4EC] transition">
                   Cambiar
                 </button>
