@@ -3,6 +3,8 @@
 // así todas las personas del equipo ven la misma lista desde cualquier
 // celular/iPad, y también queda visible en el admin de Shopify.
 //   - accion "por_pedir":  alguien lo marcó a mano como pendiente de pedir
+//   - accion "pendiente":  Yeimi puso la cantidad a pedir, falta que la Dra. lo apruebe
+//   - accion "aprobado":   la Dra. aprobó la cantidad, ya se puede pedir
 //   - accion "pedido":     ya se ordenó al proveedor (con la cantidad pedida)
 //   - accion "backorder":  agotado con el proveedor; con fecha de regreso opcional
 //                          (hastaFecha) o sin fecha = "hasta confirmación"
@@ -23,8 +25,8 @@ export default async function handler(req, res) {
   }
 
   const { productId, accion, cantidad, hastaFecha } = req.body || {};
-  if (!productId || !["por_pedir", "aprobado", "pedido", "backorder", "descartado", "quitar"].includes(accion)) {
-    res.status(400).json({ ok: false, error: "Faltan datos: productId y accion (por_pedir, aprobado, pedido, backorder, descartado o quitar)." });
+  if (!productId || !["por_pedir", "pendiente", "aprobado", "pedido", "backorder", "descartado", "quitar"].includes(accion)) {
+    res.status(400).json({ ok: false, error: "Faltan datos: productId y accion (por_pedir, pendiente, aprobado, pedido, backorder, descartado o quitar)." });
     return;
   }
 
@@ -45,7 +47,7 @@ export default async function handler(req, res) {
     } else {
       const valor = {
         estado: accion,
-        cantidad: (accion === "pedido" || accion === "aprobado") ? Number(cantidad) || null : null,
+        cantidad: ["pendiente", "aprobado", "pedido"].includes(accion) ? Number(cantidad) || null : null,
         // Para backorder: fecha estimada de regreso, o null = "hasta confirmación".
         hastaFecha: accion === "backorder" && typeof hastaFecha === "string" && hastaFecha ? hastaFecha : null,
         fecha: new Date().toISOString(),
