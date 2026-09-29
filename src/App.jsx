@@ -412,6 +412,22 @@ export default function App() {
     mostrarAviso(`Agregado a la cuenta: ${producto.nombre}`);
   }
 
+  // Agrega un "cobro libre" a la cuenta: algo que no está en la lista de
+  // productos (nombre y precio libres). Se registra como "servicio", así NUNCA
+  // toca el inventario ni Shopify — solo queda en el registro de ventas y en
+  // el reporte, para que la Dra. pueda cobrarlo sin tener que crearlo como
+  // producto de verdad.
+  function agregarCobroLibre(nombre, precio) {
+    const id = `libre-${Date.now()}`;
+    setCuenta((prev) => [...prev, {
+      lineId: `${id}-linea`,
+      producto: { id, nombre, precio: Number(precio) || 0, tipo: "servicio", shopifyProductId: null, shopifyVariantId: null, inventoryItemId: null, stock: null },
+      cantidad: 1,
+      precio: Number(precio) || 0,
+    }]);
+    mostrarAviso(`Agregado a la cuenta: ${nombre}`);
+  }
+
   function quitarDeCuenta(lineId) {
     setCuenta((prev) => prev.filter((l) => l.lineId !== lineId));
   }
@@ -1162,7 +1178,7 @@ export default function App() {
           onSubmit={(form) => handleGuardarEdicionCuenta(editarCuentaTarget, form)}
         />
       )}
-      {showCuenta && <CuentaModal cuenta={cuenta} cliente={clienteCuenta} onCambiarCliente={setClienteCuenta} onClose={() => setShowCuenta(false)} onQuitar={quitarDeCuenta} onCambiar={cambiarLinea} onCobrar={handleCobrar} />}
+      {showCuenta && <CuentaModal cuenta={cuenta} cliente={clienteCuenta} onCambiarCliente={setClienteCuenta} onClose={() => setShowCuenta(false)} onQuitar={quitarDeCuenta} onCambiar={cambiarLinea} onCobrar={handleCobrar} onAgregarLibre={agregarCobroLibre} />}
       {showResumen && <ResumenInventario products={products} onClose={() => setShowResumen(false)} />}
       {showQR && <HojaQR products={products} onClose={() => setShowQR(false)} />}
       {showScanner && <ScannerModal onScan={handleScan} cuenta={cuenta} cliente={clienteCuenta} onCobrar={() => { setShowScanner(false); setShowCuenta(true); }} onClose={() => setShowScanner(false)} />}
@@ -1993,9 +2009,12 @@ function EditarCuentaForm({ cuenta, productos, onClose, onSubmit }) {
   );
 }
 
-function CuentaModal({ cuenta, cliente, onCambiarCliente, onClose, onQuitar, onCambiar, onCobrar }) {
+function CuentaModal({ cuenta, cliente, onCambiarCliente, onClose, onQuitar, onCambiar, onCobrar, onAgregarLibre }) {
   const [metodoPago, setMetodoPago] = useState(cuenta[0]?.producto?.metodoPago || "Efectivo");
   const [enviando, setEnviando] = useState(false);
+  const [mostrarLibre, setMostrarLibre] = useState(false);
+  const [libreNombre, setLibreNombre] = useState("");
+  const [librePrecio, setLibrePrecio] = useState("");
 
   const total = cuenta.reduce((s, l) => s + (Number(l.precio) || 0) * (Number(l.cantidad) || 1), 0);
   const puedeCobrar = cuenta.length > 0 && !enviando;
@@ -2053,6 +2072,44 @@ function CuentaModal({ cuenta, cliente, onCambiarCliente, onClose, onQuitar, onC
             );
           })}
         </div>
+
+        {/* Cobro libre: algo que no está en la lista de productos. No toca
+            Shopify ni el inventario, solo queda en el registro de ventas. */}
+        {!mostrarLibre && (
+          <button onClick={() => setMostrarLibre(true)}
+            className="w-full flex items-center justify-center gap-1.5 text-sm font-medium text-[#6B4E71] border border-dashed border-[#6B4E71]/40 py-2 rounded-lg hover:bg-[#6B4E71]/5 transition">
+            <Plus className="w-3.5 h-3.5" /> Cobro libre (algo que no está en la lista)
+          </button>
+        )}
+        {mostrarLibre && (
+          <div className="bg-[#F7F4EC] border border-[#E4DFCE] rounded-xl p-3 space-y-2">
+            <p className="text-xs font-medium text-[#2F4A33]">Cobro libre</p>
+            <input type="text" value={libreNombre} onChange={(e) => setLibreNombre(e.target.value)} autoFocus
+              placeholder="¿Qué es? (ej: Consulta especial)"
+              className="w-full bg-white border border-[#E4DFCE] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#4B6B4F]/30" />
+            <div className="flex gap-2">
+              <label className="flex items-center gap-1 flex-1 bg-white border border-[#E4DFCE] rounded-lg px-3 py-2">
+                <span className="text-xs text-[#8A8368]">Q</span>
+                <input type="number" min="0" value={librePrecio} onChange={(e) => setLibrePrecio(e.target.value)}
+                  placeholder="Precio" className="w-full text-sm focus:outline-none" />
+              </label>
+              <button
+                onClick={() => {
+                  if (!libreNombre.trim() || !(Number(librePrecio) > 0)) return;
+                  onAgregarLibre(libreNombre.trim(), librePrecio);
+                  setLibreNombre(""); setLibrePrecio(""); setMostrarLibre(false);
+                }}
+                disabled={!libreNombre.trim() || !(Number(librePrecio) > 0)}
+                className="bg-[#6B4E71] text-white text-sm font-medium px-4 rounded-lg disabled:opacity-40">
+                Agregar
+              </button>
+              <button onClick={() => { setMostrarLibre(false); setLibreNombre(""); setLibrePrecio(""); }}
+                className="text-[#8A8368] px-2" aria-label="Cancelar">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Método de pago (uno para toda la cuenta) */}
         <label className="block">
