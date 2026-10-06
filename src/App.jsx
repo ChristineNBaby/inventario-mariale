@@ -984,6 +984,11 @@ export default function App() {
                 <ListChecks className="w-4 h-4 text-[#4B6B4F]" />
                 Ver todo
               </button>
+              <button onClick={() => setShowAdd(true)} title="Crear un producto o servicio nuevo en el catálogo"
+                className="flex items-center gap-1.5 bg-white border border-[#E4DFCE] px-3 py-2.5 rounded-xl text-sm text-[#2F4A33] hover:bg-[#F0EDE1] transition shrink-0">
+                <Plus className="w-4 h-4 text-[#4B6B4F]" />
+                Nuevo producto
+              </button>
             </div>
             <div className="space-y-3">
               {cargandoProductos && <p className="text-sm text-[#8A8368] text-center py-8">Cargando productos de Shopify...</p>}
@@ -1175,9 +1180,14 @@ export default function App() {
         </div>
       )}
 
-      {/* Botón + para agregar producto nuevo al inventario: solo cuando no hay una cuenta abierta */}
+      {/* Botón + para registrar una venta rápida (ej: paciente nueva): abre
+          directo "Cuenta del cliente", con su fecha, nombre y "Cobro libre".
+          Solo cuando no hay ya una cuenta abierta (si la hay, la barra de abajo
+          hace lo mismo). Para crear un producto NUEVO del catálogo, está el
+          botón "Nuevo producto" junto al buscador. */}
       {tab === "inventario" && cuenta.length === 0 && (
-        <button onClick={() => setShowAdd(true)} className="fixed bottom-6 right-6 bg-[#4B6B4F] text-white w-14 h-14 rounded-full shadow-lg flex items-center justify-center hover:bg-[#3A5540] transition">
+        <button onClick={() => setShowCuenta(true)} title="Registrar una venta"
+          className="fixed bottom-6 right-6 bg-[#4B6B4F] text-white w-14 h-14 rounded-full shadow-lg flex items-center justify-center hover:bg-[#3A5540] transition">
           <Plus className="w-6 h-6" />
         </button>
       )}
