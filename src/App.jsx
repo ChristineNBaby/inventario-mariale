@@ -164,6 +164,9 @@ export default function App() {
   // y el nombre del cliente (se puede poner desde el principio, es opcional).
   const [cuenta, setCuenta] = useState([]);
   const [clienteCuenta, setClienteCuenta] = useState("");
+  // Fecha de la venta (por si se registra unos días después de que pasó, para
+  // que aparezca en el reporte del día correcto). Por defecto, hoy.
+  const [fechaCuenta, setFechaCuenta] = useState(() => fechaLocalHoy());
   const [showCuenta, setShowCuenta] = useState(false);
   const [editTarget, setEditTarget] = useState(null);
   const [shopifySynced, setShopifySynced] = useState(false);
@@ -451,6 +454,10 @@ export default function App() {
   // Registra UNA línea de la cuenta: la guarda, la manda a los registros y
   // descuenta su stock en Shopify. Todas las líneas de una cuenta comparten el
   // mismo ticketId, el mismo cliente y la misma fecha.
+  // Devuelve { ok: true } si todo quedó sincronizado con Shopify, o
+  // { ok: false, nombre, error } si la venta se guardó pero el stock en
+  // Shopify NO se pudo descontar — para que quien cobró se entere y lo pueda
+  // corregir a mano, en vez de que el número quede mal en silencio.
   async function registrarLineaVenta(linea, meta, indice) {
     const producto = linea.producto;
     const cantidad = Number(linea.cantidad) || 1;
@@ -476,9 +483,16 @@ export default function App() {
         const r = await descontarStockEnShopify(producto.shopifyVariantId, cantidad);
         if (r?.ok && r.stockNuevo != null) {
           setProducts((prev) => prev.map((p) => (p.id === producto.id ? { ...p, stock: r.stockNuevo } : p)));
+        } else {
+          // No se pudo descontar en Shopify. Dejamos el stock que había ANTES
+          // de la venta (no el optimista) para no mostrar un número que no es
+          // real, y avisamos del fallo en vez de quedarnos callados.
+          setProducts((prev) => prev.map((p) => (p.id === producto.id ? { ...p, stock: producto.stock } : p)));
+          return { ok: false, nombre: producto.nombre, error: r?.error || "No se pudo conectar con Shopify." };
         }
       }
     }
+    return { ok: true };
   }
 
   // Cobra TODA la cuenta: registra cada producto con el mismo cliente y muestra
@@ -486,11 +500,18 @@ export default function App() {
   async function handleCobrar({ metodoPago }) {
     const lineas = cuenta;
     if (lineas.length === 0) return;
+    // Si se eligió un día distinto a hoy (venta de hace unos días que se está
+    // registrando tarde), usamos esa fecha con la hora de ahora, para que el
+    // reporte la cuente en el día correcto.
+    const diaElegido = fechaCuenta && fechaCuenta !== fechaLocalHoy() ? fechaCuenta : null;
+    const fechaVenta = diaElegido
+      ? new Date(`${diaElegido}T${new Date().toTimeString().slice(0, 8)}`).toISOString()
+      : new Date().toISOString();
     const meta = {
       ticketId: Date.now(),
       cliente: (clienteCuenta || "").trim(),
       metodoPago,
-      fecha: new Date().toISOString(),
+      fecha: fechaVenta,
     };
     const total = lineas.reduce((s, l) => s + (Number(l.precio) || 0) * (Number(l.cantidad) || 1), 0);
     const numItems = lineas.reduce((s, l) => s + (Number(l.cantidad) || 1), 0);
@@ -498,14 +519,18 @@ export default function App() {
     setShowCuenta(false);
     setCuenta([]);
     setClienteCuenta("");
+    setFechaCuenta(fechaLocalHoy());
 
     // Registra las líneas una por una (en orden) para no pisar el cajón compartido.
+    const fallos = [];
     for (let i = 0; i < lineas.length; i++) {
-      await registrarLineaVenta(lineas[i], meta, i);
+      const r = await registrarLineaVenta(lineas[i], meta, i);
+      if (r && r.ok === false) fallos.push(r);
     }
 
-    setConfirmacionStock({ cuenta: true, cliente: meta.cliente, items: numItems, total });
-    setTimeout(() => setConfirmacionStock(null), 5000);
+    setConfirmacionStock({ cuenta: true, cliente: meta.cliente, items: numItems, total, fallos });
+    // Si algo falló, dejamos el aviso más tiempo — es importante que se vea.
+    setTimeout(() => setConfirmacionStock(null), fallos.length > 0 ? 12000 : 5000);
   }
 
   // La Dra. corrige el stock de un producto directo en la app (ej: un conteo
@@ -1128,9 +1153,19 @@ export default function App() {
               <strong>Total: Q{confirmacionStock.total}</strong>
             </span>
           </div>
-          <p className="text-xs text-[#A8C4A2] mt-1 flex items-center gap-1">
-            <Link2 className="w-3 h-3" /> Inventario descontado en Shopify
-          </p>
+          {(!confirmacionStock.fallos || confirmacionStock.fallos.length === 0) && (
+            <p className="text-xs text-[#A8C4A2] mt-1 flex items-center gap-1">
+              <Link2 className="w-3 h-3" /> Inventario descontado en Shopify
+            </p>
+          )}
+          {confirmacionStock.fallos && confirmacionStock.fallos.length > 0 && (
+            <div className="text-xs text-[#F5C9A8] mt-1.5 space-y-0.5">
+              <p className="font-semibold">⚠ El cobro quedó guardado, pero no se pudo bajar el stock en Shopify de:</p>
+              {confirmacionStock.fallos.map((f, i) => (
+                <p key={i}>• {f.nombre} — avísale a Christine para corregirlo a mano.</p>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -1178,7 +1213,7 @@ export default function App() {
           onSubmit={(form) => handleGuardarEdicionCuenta(editarCuentaTarget, form)}
         />
       )}
-      {showCuenta && <CuentaModal cuenta={cuenta} cliente={clienteCuenta} onCambiarCliente={setClienteCuenta} onClose={() => setShowCuenta(false)} onQuitar={quitarDeCuenta} onCambiar={cambiarLinea} onCobrar={handleCobrar} onAgregarLibre={agregarCobroLibre} />}
+      {showCuenta && <CuentaModal cuenta={cuenta} cliente={clienteCuenta} onCambiarCliente={setClienteCuenta} fecha={fechaCuenta} onCambiarFecha={setFechaCuenta} onClose={() => setShowCuenta(false)} onQuitar={quitarDeCuenta} onCambiar={cambiarLinea} onCobrar={handleCobrar} onAgregarLibre={agregarCobroLibre} />}
       {showResumen && <ResumenInventario products={products} onClose={() => setShowResumen(false)} />}
       {showQR && <HojaQR products={products} onClose={() => setShowQR(false)} />}
       {showScanner && <ScannerModal onScan={handleScan} cuenta={cuenta} cliente={clienteCuenta} onCobrar={() => { setShowScanner(false); setShowCuenta(true); }} onClose={() => setShowScanner(false)} />}
@@ -1252,6 +1287,16 @@ function FotoMini({ p }) {
       {p.foto ? <img src={p.foto} alt={p.nombre} className="w-full h-full object-cover" /> : <Camera className="w-4 h-4 text-[#4B6B4F]/40" />}
     </div>
   );
+}
+
+// La fecha de HOY en el calendario del celular (YYYY-MM-DD), no en UTC —
+// para que el selector de fecha de la venta empiece en el día correcto sin
+// importar la hora o la zona horaria del navegador.
+function fechaLocalHoy() {
+  const d = new Date();
+  const mes = String(d.getMonth() + 1).padStart(2, "0");
+  const dia = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${mes}-${dia}`;
 }
 
 function formatearFecha(iso) {
@@ -2009,12 +2054,15 @@ function EditarCuentaForm({ cuenta, productos, onClose, onSubmit }) {
   );
 }
 
-function CuentaModal({ cuenta, cliente, onCambiarCliente, onClose, onQuitar, onCambiar, onCobrar, onAgregarLibre }) {
+function CuentaModal({ cuenta, cliente, onCambiarCliente, fecha, onCambiarFecha, onClose, onQuitar, onCambiar, onCobrar, onAgregarLibre }) {
   const [metodoPago, setMetodoPago] = useState(cuenta[0]?.producto?.metodoPago || "Efectivo");
   const [enviando, setEnviando] = useState(false);
   const [mostrarLibre, setMostrarLibre] = useState(false);
   const [libreNombre, setLibreNombre] = useState("");
   const [librePrecio, setLibrePrecio] = useState("");
+
+  const hoy = fechaLocalHoy();
+  const esOtroDia = fecha && fecha !== hoy;
 
   const total = cuenta.reduce((s, l) => s + (Number(l.precio) || 0) * (Number(l.cantidad) || 1), 0);
   const puedeCobrar = cuenta.length > 0 && !enviando;
@@ -2028,6 +2076,16 @@ function CuentaModal({ cuenta, cliente, onCambiarCliente, onClose, onQuitar, onC
           <input type="text" value={cliente} onChange={(e) => onCambiarCliente(e.target.value)} autoFocus
             className="w-full mt-1 bg-white border border-[#E4DFCE] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#4B6B4F]/30"
             placeholder="¿A nombre de quién es esta cuenta?" />
+        </label>
+
+        {/* Fecha de la venta — por si es de hace unos días y se registra tarde */}
+        <label className="block">
+          <span className="text-xs font-medium text-[#2F4A33]">¿Cuándo fue esta venta?</span>
+          <input type="date" value={fecha} max={hoy} onChange={(e) => onCambiarFecha(e.target.value)}
+            className="w-full mt-1 bg-white border border-[#E4DFCE] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#4B6B4F]/30" />
+          {esOtroDia && (
+            <span className="text-xs text-[#C89B3C] font-medium">⚠ Se va a registrar como del {formatearFecha(fecha)}, no de hoy.</span>
+          )}
         </label>
 
         {cuenta.length === 0 && (
