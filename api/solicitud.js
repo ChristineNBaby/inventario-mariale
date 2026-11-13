@@ -47,7 +47,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  const { nombre, correo, telefono, comentarios, items, trampa } = req.body || {};
+  const { nombre, correo, telefono, comentarios, formula, items, trampa } = req.body || {};
 
   // Campo trampa para robots: si viene lleno, fingimos éxito y no hacemos nada.
   if (trampa) {
@@ -59,6 +59,7 @@ export default async function handler(req, res) {
   const correoLimpio = (correo || "").trim();
   const telefonoLimpio = (telefono || "").trim();
   const comentariosLimpios = (comentarios || "").trim();
+  const formulaLimpia = (formula || "").trim();
 
   if (!correoLimpio) {
     res.status(400).json({ ok: false, error: "Falta el correo." });
@@ -84,6 +85,11 @@ export default async function handler(req, res) {
   if (nombreLimpio) notaPartes.push(`Nombre: ${nombreLimpio}`);
   if (telefonoLimpio) notaPartes.push(`Teléfono / WhatsApp: ${telefonoLimpio}`);
   if (comentariosLimpios) notaPartes.push(`Comentarios de la paciente: ${comentariosLimpios}`);
+  if (formulaLimpia) {
+    notaPartes.push("");
+    notaPartes.push(`COMPONENTES DE LA FÓRMULA (tintura personalizada):`);
+    notaPartes.push(formulaLimpia);
+  }
   notaPartes.push("");
   notaPartes.push("Revisar antes de enviar la factura.");
 
